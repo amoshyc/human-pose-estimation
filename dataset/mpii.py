@@ -74,7 +74,9 @@ class MPIIDataset(Dataset):
             vs = jts[:, i, 2] == 1
             for r, c in zip(rs[vs], cs[vs]):
                 rr, cc, g = gaussian2d((r, c), (3, 3), shape=self.hmp_size)
-                hmp[i, rr, cc] += g / g.max()
+                hmp[i, rr, cc] += g
+            if vs.any():
+                hmp[i] /= hmp[i].max()
 
         return {'img': img, 'hmp': hmp, 'jts': jts}
 
