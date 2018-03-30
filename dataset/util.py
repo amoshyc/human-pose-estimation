@@ -79,7 +79,7 @@ def visualize_jts(img, jts, name):
         ax.plot(cs[vs], rs[vs], '.', color=cm(i / 20))
 
     lines = [[0, 1], [1, 2], [2, 6], [6, 3], [3, 4], [4, 5], [6, 7], [7, 8],
-             [10, 11], [11, 12], [13, 14], [14, 15], [8, 12], [8, 13], [8, 9]]
+             [10, 11], [11, 12], [13, 14], [14, 15], [7, 12], [7, 13], [8, 9]]
     for i in range(n_people):
         rs = np.round(jts[i, :, 0] * img_h).astype(np.int32)
         cs = np.round(jts[i, :, 1] * img_w).astype(np.int32)
@@ -93,7 +93,7 @@ def visualize_jts(img, jts, name):
     fig.savefig(name, bbox_inches='tight', pad_inches=0)
 
 
-def visualize_hmp(img, hmp, name, size=None):
+def visualize_hmp(img, hmp, name):
     fig, ax = plt.subplots()
     ax.imshow(img)
     ax.axis('off')

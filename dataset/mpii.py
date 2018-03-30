@@ -74,20 +74,16 @@ class MPIIDataset(Dataset):
             vs = jts[:, i, 2] == 1
             for r, c in zip(rs[vs], cs[vs]):
                 rr, cc, g = gaussian2d((r, c), (3, 3), shape=self.hmp_size)
-                hmp[i, rr, cc] += g
-            if vs.any():
-                hmp[i] /= hmp[i].max()
+                hmp[i, rr, cc] = np.maximum(hmp[i, rr, cc], g / g.max())
 
-        return {'img': img, 'hmp': hmp, 'jts': jts}
-
+        meta = { 'jts': jts }
+        return img, hmp, meta
 
 if __name__ == '__main__':
     ds = MPIIDataset('../mpii/images/', '../mpii/mpii_annotations.json')
 
-    item = ds[222]
-    visualize_jts(item['img'], item['jts'], '222')
-    visualize_hmp(item['img'], item['hmp'], '222p')
-    # item = ds[1100]
-    # visualize_jts(item['img'], item['jts'], '1100')
-    # item = ds[1600]
-    # visualize_jts(item['img'], item['jts'], '1600')
+    for idx in [222, 1100, 1600]:
+        img, hmp, meta = ds[idx]
+        visualize_hmp(img, hmp, f'{idx:04d}.png')
+        visualize_jts(img, meta['jts'], f'{idx:04d}gt.png')
+    
