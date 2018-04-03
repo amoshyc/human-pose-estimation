@@ -79,6 +79,7 @@ class MPIIDataset(Dataset):
         meta = { 'jts': jts }
         return img, hmp, meta
 
+
 if __name__ == '__main__':
     ds = MPIIDataset('../mpii/images/', '../mpii/mpii_annotations.json')
 
