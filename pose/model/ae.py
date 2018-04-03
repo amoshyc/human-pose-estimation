@@ -70,27 +70,26 @@ class Net(nn.Module):
         x = self.pre(x)
         x = self.hg(x)
         x = self.post(x)
+        x[:, :-1, ...] = F.sigmoid(x[:, :-1, ...])
         return x
 
 
-def tag_criterion(pred_batch, jts_batch):
+def tag_criterion(pred_batch, kpt_batch):
+    # TODO, currently incorrect
     loss = 0.0
-    for pred, jts in zip(pred_batch, jts_batch):
-        vs = jts[:, 2] == 1
-        rs = jts[:, 0][vs]
-        cs = jts[:, 1][vs]
-        tags = pred[:, rs, cs]
+    for pred, kpt in zip(pred_batch, kpt_batch):
+        tags = pred[kpt > 0]
         re = torch.mean(tags)
-        A = torch.expand(len(re), len(re))
-        B = A.T
+        A = re.expand(len(re), len(re))
+        B = A.t()
         loss1 = torch.mean((tags - re)**2)
         loss2 = torch.mean(torch.exp((-1/2) * (A - B)**2))
         loss += (loss1 + loss2)
     return loss
 
 
-def seg_criterion(pred_batch, jts_batch):
-    return F.mse_loss(pred[:, :-1, ...], hmp)
+def seg_criterion(pred_batch, hmp_batch):
+    return F.mse_loss(pred_batch, hmp_batch)
 
 
 if __name__ == '__main__':

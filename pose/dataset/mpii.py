@@ -3,6 +3,7 @@ import pathlib
 
 import numpy as np
 from PIL import Image
+import torch
 
 from . import util
 
@@ -11,13 +12,13 @@ class MPIIDataset(object):
                  image_dir=None,
                  json_path=None,
                  img_size=(256, 256),
-                 hmp_size=(256, 256),
+                 lbl_size=(256, 256),
                  batch_size=2,
                  mode='train',):
         self.image_dir = pathlib.Path(image_dir).resolve()
         self.json_path = pathlib.Path(json_path).resolve()
         self.img_size = img_size
-        self.hmp_size = hmp_size
+        self.lbl_size = lbl_size
 
         assert self.image_dir.exists()
         assert self.json_path.exists()
@@ -51,20 +52,31 @@ class MPIIDataset(object):
                 jts.append(jt)
 
         jts = np.float32(jts) # (n_people, 16, 3)
-        jts = jts[:, :, [1, 0, 2]]
-        jts[:, :, 0] = jts[:, :, 0] / h # normalized to 0~1
-        jts[:, :, 1] = jts[:, :, 1] / w # normalized to 0~1
+        jts = jts[:, :, [2, 1, 0]] # [x, y, v] -> [v, r, c]
+        jts[:, :, 1] = np.round(jts[:, :, 0] / h * self.lbl_size[0])
+        jts[:, :, 2] = np.round(jts[:, :, 1] / w * self.lbl_size[1])
+        jts = np.int32(jts)
 
-        hmp = np.zeros((16, *self.hmp_size), dtype=np.float32)
+        hmp = np.zeros((16, *self.lbl_size), dtype=np.float32)
         for i in range(16):
-            rs = np.round(jts[:, i, 0] * self.hmp_size[0]).astype(np.int32)
-            cs = np.round(jts[:, i, 1] * self.hmp_size[1]).astype(np.int32)
-            vs = jts[:, i, 2] == 1
-            for r, c in zip(rs[vs], cs[vs]):
-                rr, cc, g = util.gaussian2d((r, c), (1, 1), shape=self.hmp_size)
+            vs = jts[:, i, 0] == 1
+            rs = jts[:, i, 1][vs]
+            cs = jts[:, i, 2][vs]
+            for r, c in zip(rs, vs):
+                rr, cc, g = util.gaussian2d((r, c), (1, 1), shape=self.lbl_size)
                 hmp[i, rr, cc] = np.maximum(hmp[i, rr, cc], g / g.max())
 
-        return img, hmp, jts
+        kpt = np.zeros(self.lbl_size, dtype=np.int32) # a (label) mask
+        for i in range(n_people):
+            vs = jts[i, :, 0] == 1
+            rs = jts[i, :, 1][vs]
+            cs = jts[i, :, 2][vs]
+            kpt[rs, cs] = i + 1
+
+        img = torch.from_numpy(np.transpose(img, [2, 0, 1])).float()
+        hmp = torch.from_numpy(hmp).float()
+        kpt = torch.from_numpy(kpt).float()
+        return img, hmp, kpt
 
 
 if __name__ == '__main__':
@@ -73,7 +85,7 @@ if __name__ == '__main__':
     for idx in [222, 1100, 1600]:
         img, hmp, jts = ds[idx]
         util.visualize_hmp(img, hmp, f'{idx:04d}.png')
-        util.visualize_jts(img, jts, f'{idx:04d}gt.png')
+        # util.visualize_jts(img, jts, f'{idx:04d}gt.png')
 
     
     
