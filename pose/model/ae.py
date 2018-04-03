@@ -41,10 +41,10 @@ class Hourglass(nn.Module):
 
     def forward(self, x):
         z1 = self.d1(x)
-        z2 = self.d2(F.max_pooling2d(z1))
-        z3 = self.d3(F.max_pooling2d(z2))
-        z4 = self.d4(F.max_pooling2d(z3))
-        z = F.max_pooling2d(z4)
+        z2 = self.d2(F.max_pool2d(z1, 2))
+        z3 = self.d3(F.max_pool2d(z2, 2))
+        z4 = self.d4(F.max_pool2d(z3, 2))
+        z = F.max_pool2d(z4, 2)
 
         z1 = self.m1(z1)
         z2 = self.m2(z2)
@@ -56,18 +56,41 @@ class Hourglass(nn.Module):
         z3 = self.u3(z3 + F.upsample(z4, scale_factor=2, mode='bilinear'))
         z2 = self.u2(z2 + F.upsample(z3, scale_factor=2, mode='bilinear'))
         z1 = self.u1(z1 + F.upsample(z2, scale_factor=2, mode='bilinear'))
+        return z1
 
 
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.pre = _make_block(3, 32, k=7, p=0, s=2)
+        self.pre = _make_block(3, 32, k=7, p=3, s=2)
         self.hg = Hourglass(32)
+        self.post = _make_block(32, 17, k=1)
 
     def forward(self, x):
         x = self.pre(x)
         x = self.hg(x)
+        x = self.post(x)
         return x
+
+
+def tag_criterion(pred_batch, jts_batch):
+    loss = 0.0
+    for pred, jts in zip(pred_batch, jts_batch):
+        vs = jts[:, 2] == 1
+        rs = jts[:, 0][vs]
+        cs = jts[:, 1][vs]
+        tags = pred[:, rs, cs]
+        re = torch.mean(tags)
+        A = torch.expand(len(re), len(re))
+        B = A.T
+        loss1 = torch.mean((tags - re)**2)
+        loss2 = torch.mean(torch.exp((-1/2) * (A - B)**2))
+        loss += (loss1 + loss2)
+    return loss
+
+
+def seg_criterion(pred_batch, jts_batch):
+    return F.mse_loss(pred[:, :-1, ...], hmp)
 
 
 if __name__ == '__main__':
@@ -75,6 +98,6 @@ if __name__ == '__main__':
 
     inp = torch.rand((10, 3, 256, 256))
     inp_var = Variable(inp.cuda(), requires_grad=True)
-    out_var = Net(inp_var)
+    out_var = net(inp_var)
     
-    print(out_var.size)
+    print(out_var.size())

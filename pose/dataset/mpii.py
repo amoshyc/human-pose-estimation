@@ -1,33 +1,21 @@
 import json
 import pathlib
-from pprint import pprint
-
-import warnings
-warnings.filterwarnings("ignore")
 
 import numpy as np
-import matplotlib as mpl
-mpl.use('Agg')
-import matplotlib.pyplot as plt
-plt.style.use('seaborn')
-
-import skimage
 from PIL import Image
-from torch.utils.data import Dataset
-from util import *
 
+from . import util
 
-class MPIIDataset(Dataset):
+class MPIIDataset(object):
     def __init__(self,
                  image_dir=None,
                  json_path=None,
                  img_size=(256, 256),
                  hmp_size=(256, 256),
-                 transform=None,
-                 mode='train'):
+                 batch_size=2,
+                 mode='train',):
         self.image_dir = pathlib.Path(image_dir).resolve()
         self.json_path = pathlib.Path(json_path).resolve()
-        self.transform = transform
         self.img_size = img_size
         self.hmp_size = hmp_size
 
@@ -73,18 +61,19 @@ class MPIIDataset(Dataset):
             cs = np.round(jts[:, i, 1] * self.hmp_size[1]).astype(np.int32)
             vs = jts[:, i, 2] == 1
             for r, c in zip(rs[vs], cs[vs]):
-                rr, cc, g = gaussian2d((r, c), (3, 3), shape=self.hmp_size)
+                rr, cc, g = util.gaussian2d((r, c), (1, 1), shape=self.hmp_size)
                 hmp[i, rr, cc] = np.maximum(hmp[i, rr, cc], g / g.max())
 
-        meta = { 'jts': jts }
-        return img, hmp, meta
+        return img, hmp, jts
 
 
 if __name__ == '__main__':
     ds = MPIIDataset('../mpii/images/', '../mpii/mpii_annotations.json')
 
     for idx in [222, 1100, 1600]:
-        img, hmp, meta = ds[idx]
-        visualize_hmp(img, hmp, f'{idx:04d}.png')
-        visualize_jts(img, meta['jts'], f'{idx:04d}gt.png')
+        img, hmp, jts = ds[idx]
+        util.visualize_hmp(img, hmp, f'{idx:04d}.png')
+        util.visualize_jts(img, jts, f'{idx:04d}gt.png')
+
+    
     
