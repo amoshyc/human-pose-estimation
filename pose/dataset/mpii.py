@@ -71,7 +71,7 @@ class MPIIDataset(object):
             vs = jts[i, :, 0] == 1
             rs = jts[i, :, 1][vs]
             cs = jts[i, :, 2][vs]
-            kpt[rs, cs] = i + 1
+            kpt[rs, cs] = (i + 1)
 
         img = torch.from_numpy(np.transpose(img, [2, 0, 1])).float()
         hmp = torch.from_numpy(hmp).float()

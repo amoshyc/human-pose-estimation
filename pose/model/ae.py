@@ -75,14 +75,21 @@ class Net(nn.Module):
 
 
 def tag_criterion(pred_batch, kpt_batch):
-    # TODO, currently incorrect
     loss = 0.0
     for pred, kpt in zip(pred_batch, kpt_batch):
-        tags = pred[kpt > 0]
-        re = torch.mean(tags)
-        A = re.expand(len(re), len(re))
+        n_people = int(kpt.max())
+        re = Variable(torch.zeros(n_people), requires_grad=True).cuda()
+        loss1 = Variable(torch.zeros(n_people), requires_grad=True).cuda()
+        for i in range(n_people):
+            mask = (kpt == (i + 1))
+            if mask.any() == False:
+                continue
+            tags = pred[mask]
+            re[i] = torch.mean(tags)
+            loss1[i] = torch.mean((tags - re[i])**2)
+        loss1 = torch.mean(loss1)
+        A = re.expand(n_people, n_people)
         B = A.t()
-        loss1 = torch.mean((tags - re)**2)
         loss2 = torch.mean(torch.exp((-1/2) * (A - B)**2))
         loss += (loss1 + loss2)
     return loss
