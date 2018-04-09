@@ -30,7 +30,8 @@ class MPIIDataset(object):
             ]
 
     def __len__(self):
-        return len(self.anno)
+        # return len(self.anno)
+        return 2000
 
     def __getitem__(self, idx):
         anno = self.anno[idx]
@@ -63,7 +64,7 @@ class MPIIDataset(object):
             rs = jts[:, i, 1][vs]
             cs = jts[:, i, 2][vs]
             for r, c in zip(rs, vs):
-                rr, cc, g = util.gaussian2d((r, c), (1, 1), shape=self.lbl_size)
+                rr, cc, g = util.gaussian2d((r, c), (2, 2), shape=self.lbl_size)
                 hmp[i, rr, cc] = np.maximum(hmp[i, rr, cc], g / g.max())
 
         kpt = np.zeros(self.lbl_size, dtype=np.int32) # a (label) mask

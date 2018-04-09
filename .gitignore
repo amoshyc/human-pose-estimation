@@ -105,3 +105,5 @@ mpii/
 *.jpg
 *.png
 *.tar.gz
+nohup.out
+

@@ -1,7 +1,8 @@
-from pose.dataset import mpii
-from pose.model.trainer import Trainer
-from torch.utils.data import DataLoader
 from tqdm import tqdm
+from pose.dataset import mpii
+from pose.ae import Trainer
+
+from torch.utils.data import DataLoader
 from torch.autograd import Variable
 
 
