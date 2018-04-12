@@ -58,14 +58,14 @@ class MPIIDataset(object):
         jts[:, :, 2] = np.round(jts[:, :, 1] / w * self.lbl_size[1])
         jts = np.int32(jts)
 
-        hmp = np.zeros((16, *self.lbl_size), dtype=np.float32)
+        hmp = np.zeros((*self.lbl_size, 16), dtype=np.float32)
         for i in range(16):
             vs = jts[:, i, 0] == 1
             rs = jts[:, i, 1][vs]
             cs = jts[:, i, 2][vs]
             for r, c in zip(rs, vs):
                 rr, cc, g = util.gaussian2d((r, c), (2, 2), shape=self.lbl_size)
-                hmp[i, rr, cc] = np.maximum(hmp[i, rr, cc], g / g.max())
+                hmp[rr, cc, i] = np.maximum(hmp[i, rr, cc], g / g.max())
 
         kpt = np.zeros(self.lbl_size, dtype=np.int32) # a (label) mask
         for i in range(n_people):
@@ -74,19 +74,29 @@ class MPIIDataset(object):
             cs = jts[i, :, 2][vs]
             kpt[rs, cs] = (i + 1)
 
-        img = torch.from_numpy(np.transpose(img, [2, 0, 1])).float()
-        hmp = torch.from_numpy(hmp).float()
-        kpt = torch.from_numpy(kpt).float()
         return img, hmp, kpt
+
+    def flow(self, batch_size):
+        idx = 0
+        img_batch = np.zeros((batch_size, *self.img_size, 3), dtype=np.float32)
+        hmp_batch = np.zeros((batch_size, *self.lbl_size, 16), dtype=np.float32)
+        kpt_batch = np.zeros((batch_size, *self.lbl_size), dtype=np.float32)
+
+        while True:
+            n_samples = len(self)
+            indices = np.random.permutation(n_samples)
+            for i in indices:
+                img, hmp, kpt = self[i]
+                img_batch[idx] = img
+                hmp_batch[idx] = hmp
+                kpt_batch[idx] = kpt
+                if idx + 1 == batch_size:
+                    yield img_bath, hmp_batch, kpt_batch
+                idx = (idx + 1) % batch_size
 
 
 if __name__ == '__main__':
     ds = MPIIDataset('../mpii/images/', '../mpii/mpii_annotations.json')
-
-    for idx in [222, 1100, 1600]:
-        img, hmp, jts = ds[idx]
-        util.visualize_hmp(img, hmp, f'{idx:04d}.png')
-        # util.visualize_jts(img, jts, f'{idx:04d}gt.png')
 
     
     
