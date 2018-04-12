@@ -13,11 +13,10 @@ import torch.optim as optim
 def _make_block(in_c, out_c, k=3, p=0, s=1, act='relu'):
     conv = nn.Conv2d(in_c, out_c, k, padding=p)
     init.xavier_normal(conv.weight, math.sqrt(2))
-    return nn.Sequential(
-        conv,
-        nn.BatchNorm2d(out_c),
-        nn.ReLU() if act == 'relu' else nn.Linear()
-    )
+    layers = [conv, nn.BatchNorm2d(out_c)]
+    if act == 'relu':
+        layers.append(nn.ReLU())
+    return nn.Sequential(*layers)
 
 
 class Hourglass(nn.Module):
@@ -38,10 +37,8 @@ class Hourglass(nn.Module):
         self.m3 = _make_block(c, c, k=3, p=1)
         self.m4 = _make_block(c, c, k=3, p=1)
         self.m5 = nn.Sequential(
-            _make_block(c, c, k=3, p=1),
-            _make_block(c, c, k=3, p=1),
-            _make_block(c, c, k=3, p=1)
-        )
+            _make_block(c, c, k=3, p=1), _make_block(c, c, k=3, p=1),
+            _make_block(c, c, k=3, p=1))
 
     def forward(self, x):
         z1 = self.d1(x)
@@ -68,7 +65,7 @@ class Net(nn.Module):
         super().__init__()
         self.pre = _make_block(3, 32, k=7, p=3, s=2)
         self.hg = Hourglass(32)
-        self.post = _make_block(32, 17, k=1, act='linear')
+        self.post = _make_block(32, 17, k=1, act=None)
 
     def forward(self, x):
         x = self.pre(x)
@@ -84,7 +81,7 @@ def tag_criterion(pred_batch, kpt_batch):
         n_people = int(kpt.max())
         re = Variable(T.zeros(n_people), requires_grad=False).cuda()
         loss1 = Variable(T.zeros(n_people), requires_grad=False).cuda()
-        
+
         for i in range(n_people):
             mask = (kpt == (i + 1))
             if mask.any() == False:
@@ -96,7 +93,7 @@ def tag_criterion(pred_batch, kpt_batch):
         B = T.transpose(A, 0, 1)
 
         loss1 = T.mean(loss1)
-        loss2 = T.mean(T.exp((-1/2) * (A - B)**2))
+        loss2 = T.mean(T.exp((-1 / 2) * (A - B)**2))
         loss[ix] = loss1 + loss2
     return T.mean(loss)
 
@@ -106,12 +103,11 @@ def seg_criterion(pred_batch, hmp_batch):
     # return F.binary_cross_entropy(pred_batch, hmp_batch)
 
 
-
 if __name__ == '__main__':
     net = Net().cuda()
 
     inp = T.rand((10, 3, 256, 256))
     inp_var = Variable(inp.cuda(), requires_grad=True)
     out_var = net(inp_var)
-    
+
     print(out_var.size())
