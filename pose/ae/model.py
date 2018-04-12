@@ -10,13 +10,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 
-def _make_block(in_c, out_c, k=3, p=0, s=1):
+def _make_block(in_c, out_c, k=3, p=0, s=1, act='relu'):
     conv = nn.Conv2d(in_c, out_c, k, padding=p)
     init.xavier_normal(conv.weight, math.sqrt(2))
     return nn.Sequential(
         conv,
         nn.BatchNorm2d(out_c),
-        nn.ReLU()
+        nn.ReLU() if act == 'relu' else nn.Linear()
     )
 
 
@@ -68,7 +68,7 @@ class Net(nn.Module):
         super().__init__()
         self.pre = _make_block(3, 32, k=7, p=3, s=2)
         self.hg = Hourglass(32)
-        self.post = _make_block(32, 17, k=1)
+        self.post = _make_block(32, 17, k=1, act='linear')
 
     def forward(self, x):
         x = self.pre(x)
