@@ -106,14 +106,15 @@ class MPIIdownloader(object):
                 joints_id = points['id'][0]
                 joints_xs = points['x'][0]
                 joints_ys = points['y'][0]
+                joints = dict()
+                for jid, x, y in zip(joints_id, joints_xs, joints_ys):
+                    joints[int(jid[0, 0])] = [float(x[0, 0]), float(y[0, 0])]
+
                 try:
                     joints_vis = [bool(v) for v in points['is_visible'][0]]
                 except:
                     joints_vis = [False for _ in range(16)]
 
-                joints = dict()
-                for jid, x, y in zip(joints_id, joints_xs, joints_ys):
-                    joints[int(jid[0, 0])] = [float(x[0, 0]), float(y[0, 0])]
                 data['people'].append({
                     'visibility': joints_vis,
                     'joints': joints
@@ -146,16 +147,13 @@ class MPII(object):
 
         # Draw Gaussian & tag
         for pid, person in enumerate(anno['people']):
-            for i, vis in enumerate(person['visibility']):
-                if not vis:
-                    continue
-                x, y = person['joints'][str(i)]
+            for jid, (x, y) in person['joints'].items():
+                jid = int(jid)
                 r = round(y / H * self.img_size[0])
                 c = round(x / W * self.img_size[1])
                 rr, cc, g = util.gaussian2d(
                     [r, c], [1, 1], shape=self.img_size)
-                lbl[i, rr, cc] = np.maximum(lbl[i, rr, cc], g / g.max())
-
+                lbl[jid, rr, cc] = np.maximum(lbl[jid, rr, cc], g / g.max())
                 tag[0, r, c] = pid + 1
 
         # Relabel tag
@@ -171,3 +169,23 @@ class MPII(object):
 root_dir = pathlib.Path('./mpii')
 MPIItrain = MPII(root_dir, mode='train')
 MPIIvalid = MPII(root_dir, mode='valid')
+
+
+def visualize(img, lbl, tag):
+    fig, ax = plt.subplots(dpi=100)
+    ax.imshow(img)
+    ax.axis('off')
+    for i in range(16):
+        peaks = feature.peak_local_max(lbl[i], exclude_border=False)
+        ax.plot(peaks[:, 1], peaks[:, 0], 'r.')
+    fig.tight_layout()
+    plt.show()
+
+
+if __name__ == '__main__':
+    for i in range(5):
+        img, lbl, tag = MPIItrain[i]
+        img = transforms.ToPILImage()(img)
+        lbl = lbl.numpy()
+        tag = tag.numpy()
+        visualize(img, lbl, tag)
