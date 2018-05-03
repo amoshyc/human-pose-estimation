@@ -8,18 +8,23 @@ import numpy as np
 from scipy.io import loadmat
 from PIL import Image
 from tqdm import tqdm
+from skimage import measure
+
+import torch
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data.dataset import Subset, ConcatDataset
 
+import util
 
-class MPIIDownloader(object):
+
+class MPIIdownloader(object):
     IMAGE_URL = 'http://datasets.d2.mpi-inf.mpg.de/andriluka14cvpr/mpii_human_pose_v1.tar.gz'
     ANNOT_URL = 'http://datasets.d2.mpi-inf.mpg.de/andriluka14cvpr/mpii_human_pose_v1_u12_2.zip'
 
     def __init__(self, root_dir):
         super().__init__()
-        self.root_dir = root_dir
+        self.root_dir = pathlib.Path(root_dir)
         self.train_dir = self.root_dir / 'train'
         self.valid_dir = self.root_dir / 'valid'
 
@@ -32,12 +37,12 @@ class MPIIDownloader(object):
         self.root_dir.mkdir(exist_ok=True, parents=True)
         if not (self.root_dir / 'mpii.tar.gz').exists():
             self._download_file(
-                MPIIDownloader.IMAGE_URL,
+                MPIIdownloader.IMAGE_URL,
                 self.root_dir / 'mpii.tar.gz',
                 desc='Download MPII Images')
         if not (self.root_dir / 'anno.zip').exists():
             self._download_file(
-                MPIIDownloader.ANNOT_URL,
+                MPIIdownloader.ANNOT_URL,
                 self.root_dir / 'anno.zip',
                 desc='Download MPII Anno')
 
@@ -49,7 +54,7 @@ class MPIIDownloader(object):
 
     def split(self):
         mat_path = 'mpii_human_pose_v1_u12_2/mpii_human_pose_v1_u12_1.mat'
-        anno = self._mat2json((self.root_dir / mat_path))
+        anno = self._mat2json(str(self.root_dir / mat_path))
         with (self.root_dir / 'anno_all.json').open('w') as f:
             json.dump(anno, f)
 
@@ -119,23 +124,50 @@ class MPIIDownloader(object):
 
 
 class MPII(object):
-    def __init__(self,
-                 root_dir,
-                 mode='train',
-                 img_transform=None,
-                 lbl_transform=None,
-                 tag_transform=None):
+    def __init__(self, root_dir, mode='train', img_size=(256, 256)):
         super().__init__()
-        self.root_dir = root_dir
-        self.train_dir = self.root_dir / 'processed' / 'train'
-        self.valid_dir = self.root_dir / 'processed' / 'valid'
-
-        self.img_transform = img_transform
-        self.lbl_transform = lbl_transform
-        self.tag_transform = tag_transform
+        self.root_dir = pathlib.Path(root_dir) / mode
+        self.img_size = img_size  # H, W
+        with (self.root_dir / 'anno.json').open() as f:
+            self.anno = json.load(f)
 
     def __len__(self):
         return len(self.anno)
 
     def __getitem__(self, idx):
-        pass
+        anno = self.anno[idx]
+        img_path = self.root_dir / anno['filename']
+        img = Image.open(img_path).convert('RGB')
+        W, H = img.size
+
+        img = img.resize(self.img_size[::-1])
+        lbl = np.zeros((16, *self.img_size), dtype=np.float32)
+        tag = np.zeros((1, *self.img_size), dtype=np.uint8)
+
+        # Draw Gaussian & tag
+        for pid, person in enumerate(anno['people']):
+            for i, vis in enumerate(person['visibility']):
+                if not vis:
+                    continue
+                x, y = person['joints'][str(i)]
+                r = round(y / H * self.img_size[0])
+                c = round(x / W * self.img_size[1])
+                rr, cc, g = util.gaussian2d(
+                    [r, c], [1, 1], shape=self.img_size)
+                lbl[i, rr, cc] = np.maximum(lbl[i, rr, cc], g / g.max())
+
+                tag[0, r, c] = pid + 1
+
+        # Relabel tag
+        tag[0, ...] = measure.label(tag[0, ...])
+
+        # Convert to tensor
+        img = transforms.ToTensor()(img)
+        lbl = torch.tensor(lbl)
+        tag = torch.tensor(tag)
+        return img, lbl, tag
+
+
+root_dir = pathlib.Path('./mpii')
+MPIItrain = MPII(root_dir, mode='train')
+MPIIvalid = MPII(root_dir, mode='valid')
