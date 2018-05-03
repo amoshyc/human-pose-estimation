@@ -72,7 +72,7 @@ class MPIIDownloader(object):
             img_path = self.root_dir / 'images' / anno['filename']
             shutil.move(str(img_path), str(self.valid_dir))
 
-    def _download_file(url, target_path, desc=''):
+    def _download_file(self, url, target_path, desc=''):
         def hook(cnt, size, ttl):
             try:
                 hook.pbar.update(min(cnt * size, ttl) - hook.pbar.n)
