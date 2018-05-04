@@ -127,6 +127,12 @@ class MPIIdownloader(object):
 class MPII(object):
     def __init__(self, root_dir, mode='train', img_size=(256, 256)):
         super().__init__()
+        img_dir_exists = (root_dir / mode).exists()
+        anno_exists = (root_dir / 'anno_all.json').exists()
+        if not img_dir_exists or not anno_exists:
+            dl = MPIIdownloader()
+            dl.start()
+
         self.root_dir = pathlib.Path(root_dir) / mode
         self.img_size = img_size  # H, W
         with (self.root_dir / 'anno.json').open() as f:
@@ -166,7 +172,7 @@ class MPII(object):
 root_dir = pathlib.Path('./mpii')
 MPIItrain = MPII(root_dir, mode='train')
 MPIIvalid = MPII(root_dir, mode='valid')
-MPIIsmall = Subset(MPIItrain, list(range(100)))
+MPIIsmall = Subset(MPIItrain, list(range(1024)))
 
 
 def visualize(img, lbl, tag):

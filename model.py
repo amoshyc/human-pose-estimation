@@ -22,7 +22,8 @@ class PoseModel(nn.Module):
             nn.Upsample(scale_factor=2),
             self._make_conv(32, 24, k=3, s=1, p=1, a='leaky'),
             nn.Upsample(scale_factor=2),
-            self._make_conv(24, 17, k=1, s=1, p=0, a='sigmoid'),
+            self._make_conv(24, 17, k=3, s=1, p=1, a='leaky'),
+            self._make_conv(17, 17, k=1, s=1, p=0, a=None),
         )
 
     def _make_conv(self, in_c, out_c, k=1, s=1, p=0, a=None):
@@ -109,7 +110,7 @@ class PoseEstimator(object):
 
         self.device = device
         self.model = PoseModel().to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01)
         self.lbl_criterion = nn.MSELoss()
         self.tag_criterion = TagLoss(self.device)
 
@@ -133,8 +134,8 @@ class PoseEstimator(object):
             lbl_loss = self.lbl_criterion(out_batch[:, :16, ...], lbl_batch)
             tag_loss = self.tag_criterion(out_batch[:, 16:, ...], tag_batch)
             loss = lbl_loss + tag_loss
-            # loss.backward()
-            # self.optimizer.step()
+            loss.backward()
+            self.optimizer.step()
 
             self.msg['loss'].update(loss)
             self.msg['lbl_loss'].update(lbl_loss)
@@ -145,7 +146,7 @@ class PoseEstimator(object):
     # def fit(self, train_dataset, valid_dataset, vis_dataset, epoch=50):
     def fit(self, train_dataset, epoch=50):
         self.train_loader = DataLoader(train_dataset,
-                batch_size=5, shuffle=True, num_workers=1)
+                batch_size=32, shuffle=True, num_workers=3)
         # self.valid_loader = DataLoader(valid_dataset,
         #         batch_size=10, shuffle=False, num_workers=1)
         # self.vis_loader = DataLoader(vis_dataset,
