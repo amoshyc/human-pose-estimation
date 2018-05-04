@@ -23,7 +23,7 @@ class PoseModel(nn.Module):
             self._make_conv(32, 24, k=3, s=1, p=1, a='leaky'),
             nn.Upsample(scale_factor=2),
             self._make_conv(24, 17, k=3, s=1, p=1, a='leaky'),
-            self._make_conv(17, 17, k=1, s=1, p=0, a='sigmoid'),
+            self._make_conv(17, 17, k=1, s=1, p=0, a='tanh'),
         )
 
     def _make_conv(self, in_c, out_c, k=1, s=1, p=0, a=None):
@@ -38,6 +38,9 @@ class PoseModel(nn.Module):
                 layers[0].weight, nonlinearity='leaky_relu')
         elif a == 'sigmoid':
             layers.append(nn.Sigmoid())
+            nn.init.xavier_normal_(layers[0].weight)
+        elif a == 'tanh':
+            layers.append(nn.Tanh())
             nn.init.xavier_normal_(layers[0].weight)
         elif a is None:
             nn.init.xavier_normal_(layers[0].weight)
