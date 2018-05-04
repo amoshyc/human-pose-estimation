@@ -149,15 +149,12 @@ class MPII(object):
         for pid, person in enumerate(anno['people']):
             for jid, (x, y) in person['joints'].items():
                 jid = int(jid)
-                r = round(y / H * self.img_size[0])
-                c = round(x / W * self.img_size[1])
+                r = min(round(y / H * self.img_size[0]), self.img_size[0] - 1)
+                c = min(round(x / W * self.img_size[1]), self.img_size[1] - 1)
+                tag[0, r, c] = pid + 1
                 rr, cc, g = util.gaussian2d(
                     [r, c], [1, 1], shape=self.img_size)
                 lbl[jid, rr, cc] = np.maximum(lbl[jid, rr, cc], g / g.max())
-                tag[0, r, c] = pid + 1
-
-        # Relabel tag
-        tag[0, ...] = measure.label(tag[0, ...])
 
         # Convert to tensor
         img = transforms.ToTensor()(img)
@@ -169,6 +166,7 @@ class MPII(object):
 root_dir = pathlib.Path('./mpii')
 MPIItrain = MPII(root_dir, mode='train')
 MPIIvalid = MPII(root_dir, mode='valid')
+MPIIsmall = Subset(MPIItrain, list(range(100)))
 
 
 def visualize(img, lbl, tag):
@@ -177,15 +175,16 @@ def visualize(img, lbl, tag):
     ax.axis('off')
     for i in range(16):
         peaks = feature.peak_local_max(lbl[i], exclude_border=False)
-        ax.plot(peaks[:, 1], peaks[:, 0], 'r.')
+        rr, cc = peaks[:, 0], peaks[:, 1]
+        ax.scatter(cc, rr, s=15, c=tag[rr, cc], cmap=plt.cm.prism)
     fig.tight_layout()
     plt.show()
 
 
 if __name__ == '__main__':
-    for i in range(5):
-        img, lbl, tag = MPIItrain[i]
+    for i in range(10, 20):
+        img, lbl, tag = MPIIsmall[i]
         img = transforms.ToPILImage()(img)
         lbl = lbl.numpy()
-        tag = tag.numpy()
+        tag = tag.numpy().squeeze()
         visualize(img, lbl, tag)

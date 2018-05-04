@@ -1,27 +1,16 @@
-import numpy as np
-import matplotlib.pyplot as plt
-plt.style.use('seaborn')
-from skimage import feature
+import pathlib
+from datetime import datetime
+
+import torch
 from torchvision.utils import save_image
 from torchvision import transforms
 
-from mpii import MPIItrain, MPIIvalid
+from mpii import MPIItrain, MPIIvalid, MPIIsmall
+from model import PoseEstimator
 
+ckpt_dir = pathlib.Path(f'./ckpt/{datetime.now():%m-%d %H:%M:%S}/')
+ckpt_dir.mkdir(parents=True)
+device = torch.device('cpu')
 
-def visualize(img, lbl, tag):
-    fig, ax = plt.subplots(dpi=100)
-    ax.imshow(img)
-    ax.axis('off')
-    for i in range(16):
-        peaks = feature.peak_local_max(lbl[i], exclude_border=False)
-        ax.plot(peaks[:, 1], peaks[:, 0], 'r.')
-    fig.tight_layout()
-    plt.show()
-
-
-for i in range(5):
-    img, lbl, tag = MPIItrain[i]
-    img = transforms.ToPILImage()(img)
-    lbl = lbl.numpy()
-    tag = tag.numpy()
-    visualize(img, lbl, tag)
+est = PoseEstimator(ckpt_dir, device)
+est.fit(MPIIsmall)
