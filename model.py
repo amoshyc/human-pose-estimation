@@ -23,7 +23,7 @@ class PoseModel(nn.Module):
             self._make_conv(32, 24, k=3, s=1, p=1, a='leaky'),
             nn.Upsample(scale_factor=2),
             self._make_conv(24, 17, k=3, s=1, p=1, a='leaky'),
-            self._make_conv(17, 17, k=1, s=1, p=0, a=None),
+            self._make_conv(17, 17, k=1, s=1, p=0, a='sigmoid'),
         )
 
     def _make_conv(self, in_c, out_c, k=1, s=1, p=0, a=None):
@@ -110,7 +110,7 @@ class PoseEstimator(object):
 
         self.device = device
         self.model = PoseModel().to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         self.lbl_criterion = nn.MSELoss()
         self.tag_criterion = TagLoss(self.device)
 
