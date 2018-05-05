@@ -159,7 +159,7 @@ class MPII(object):
                 c = min(round(x / W * self.img_size[1]), self.img_size[1] - 1)
                 tag[0, r, c] = pid + 1
                 rr, cc, g = util.gaussian2d(
-                    [r, c], [1, 1], shape=self.img_size)
+                    [r, c], [3, 3], shape=self.img_size)
                 lbl[jid, rr, cc] = np.maximum(lbl[jid, rr, cc], g / g.max())
 
         # Convert to tensor

@@ -15,42 +15,69 @@ plt.style.use('seaborn')
 from skimage import feature
 
 
+def make_conv(in_c, out_c, k=1, s=1, p=0, a=None):
+    layers = [nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p)]
+    layers.append(nn.BatchNorm2d(out_c))
+    if a == 'relu':
+        layers.append(nn.ReLU())
+        nn.init.kaiming_normal_(layers[0].weight, nonlinearity='relu')
+    elif a == 'leaky':
+        layers.append(nn.LeakyReLU())
+        nn.init.kaiming_normal_(
+            layers[0].weight, nonlinearity='leaky_relu')
+    elif a == 'sigmoid':
+        layers.append(nn.Sigmoid())
+        nn.init.xavier_normal_(layers[0].weight)
+    elif a == 'tanh':
+        layers.append(nn.Tanh())
+        nn.init.xavier_normal_(layers[0].weight)
+    elif a is None:
+        nn.init.xavier_normal_(layers[0].weight)
+    return nn.Sequential(*layers)
+
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        self.conv1 = make_conv(in_c, out_c, k=3, s=1, p=1, a='leaky')
+        self.conv2 = make_conv(in_c, out_c, k=3, s=1, p=1, a=None)
+
+    def forward(self, x):
+        z = x
+        z = self.conv1(z)
+        z = self.conv2(z)
+        z = z + x
+        z = F.leaky_relu(z)
+        return z
+
+
 class PoseModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(
-            self._make_conv(3, 8, k=3, s=2, p=1, a='leaky'),
-            self._make_conv(8, 32, k=3, s=2, p=1, a='leaky'),
-            self._make_conv(32, 32, k=3, s=1, p=1, a='leaky'),
+        self.down = nn.Sequential(
+            make_conv(3, 16, k=3, s=2, p=1, a='leaky'),
+            make_conv(16, 64, k=3, s=2, p=1, a='leaky')
+        )
+        self.conv = nn.Sequential(
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),
+            ResidualBlock(64, 64),
+        )
+        self.up = nn.Sequential(
             nn.Upsample(scale_factor=2),
-            self._make_conv(32, 24, k=3, s=1, p=1, a='leaky'),
+            make_conv(64, 32, k=3, s=1, p=1, a='leaky'),
+            make_conv(32, 32, k=3, s=1, p=1, a='leaky'),
             nn.Upsample(scale_factor=2),
-            self._make_conv(24, 17, k=3, s=1, p=1, a='leaky'),
-            self._make_conv(17, 17, k=1, s=1, p=0, a=None),
+            make_conv(32, 17, k=3, s=1, p=1, a='leaky'),
+            make_conv(17, 17, k=3, s=1, p=1, a='leaky'),
+            make_conv(17, 17, k=1, s=1, p=0, a='tanh')
         )
 
-    def _make_conv(self, in_c, out_c, k=1, s=1, p=0, a=None):
-        layers = [nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p)]
-        layers.append(nn.BatchNorm2d(out_c))
-        if a == 'relu':
-            layers.append(nn.ReLU())
-            nn.init.kaiming_normal_(layers[0].weight, nonlinearity='relu')
-        elif a == 'leaky':
-            layers.append(nn.LeakyReLU())
-            nn.init.kaiming_normal_(
-                layers[0].weight, nonlinearity='leaky_relu')
-        elif a == 'sigmoid':
-            layers.append(nn.Sigmoid())
-            nn.init.xavier_normal_(layers[0].weight)
-        elif a == 'tanh':
-            layers.append(nn.Tanh())
-            nn.init.xavier_normal_(layers[0].weight)
-        elif a is None:
-            nn.init.xavier_normal_(layers[0].weight)
-        return nn.Sequential(*layers)
-
     def forward(self, x):
-        x = self.net(x)
+        x = self.down(x)
+        x = self.conv(x)
+        x = self.up(x)
         return x
 
 
@@ -101,7 +128,7 @@ class TagLoss(object):
             tag_similarity = tag_similarity.unsqueeze(0)
             inp_similarity = inp_similarity.unsqueeze(0)
 
-            losses[i] = F.mse_loss(inp_similarity, tag_similarity)
+            losses[i] = F.binary_cross_entropy(inp_similarity, tag_similarity)
         return losses.mean()
 
 
@@ -200,7 +227,7 @@ class PoseEstimator(object):
             ax.scatter(cc, rr, s=15, c=tag[0][rr, cc], cmap=plt.cm.prism)
         return ax
 
-    def fit(self, train_dataset, valid_dataset, vis_dataset, epoch=50):
+    def fit(self, train_dataset, valid_dataset, vis_dataset, epoch=200):
         self.train_loader = DataLoader(train_dataset,
                 batch_size=32, shuffle=True, num_workers=3)
         self.valid_loader = DataLoader(valid_dataset,
