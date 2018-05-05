@@ -1,11 +1,14 @@
 import pathlib
 from datetime import datetime
 
+import matplotlib as mpl
+mpl.use('Agg')
+
 import torch
 from torchvision.utils import save_image
 from torchvision import transforms
 
-from mpii import MPIItrain, MPIIvalid, MPIIsmall
+from mpii import MPIItrain, MPIIvalid, MPIIvis
 from model import PoseEstimator
 
 import warnings
@@ -17,4 +20,4 @@ ckpt_dir.mkdir(parents=True)
 device = torch.device('cuda')
 
 est = PoseEstimator(ckpt_dir, device)
-est.fit(MPIIsmall)
+est.fit(MPIItrain, MPIIvalid, MPIIvis)

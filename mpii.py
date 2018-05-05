@@ -170,27 +170,9 @@ class MPII(object):
 
 
 root_dir = pathlib.Path('./mpii')
-MPIItrain = MPII(root_dir, mode='train')
-MPIIvalid = MPII(root_dir, mode='valid')
-MPIIsmall = Subset(MPIItrain, list(range(1024)))
-
-
-def visualize(img, lbl, tag):
-    fig, ax = plt.subplots(dpi=100)
-    ax.imshow(img)
-    ax.axis('off')
-    for i in range(16):
-        peaks = feature.peak_local_max(lbl[i], exclude_border=False)
-        rr, cc = peaks[:, 0], peaks[:, 1]
-        ax.scatter(cc, rr, s=15, c=tag[rr, cc], cmap=plt.cm.prism)
-    fig.tight_layout()
-    plt.show()
-
-
-if __name__ == '__main__':
-    for i in range(10, 20):
-        img, lbl, tag = MPIIsmall[i]
-        img = transforms.ToPILImage()(img)
-        lbl = lbl.numpy()
-        tag = tag.numpy().squeeze()
-        visualize(img, lbl, tag)
+MPIItrain = Subset(MPII(root_dir, mode='train'), list(range(1000)))
+MPIIvalid = Subset(MPII(root_dir, mode='valid'), list(range(200)))
+MPIIvis = ConcatDataset([
+    Subset(MPIItrain, list(range(10))),
+    Subset(MPIIvalid, list(range(10)))
+])
