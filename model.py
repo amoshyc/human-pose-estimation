@@ -5,131 +5,60 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torchvision.models import resnet50
 from torchvision.utils import save_image
 
-
 from tqdm import tqdm
+from skimage import feature
 import pandas as pd
 import matplotlib.pyplot as plt
 plt.style.use('seaborn')
-from skimage import feature
 
-
-def make_conv(in_c, out_c, k=1, s=1, p=0, a=None):
-    layers = [nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p)]
-    layers.append(nn.BatchNorm2d(out_c))
-    if a == 'relu':
-        layers.append(nn.ReLU())
-        nn.init.kaiming_normal_(layers[0].weight, nonlinearity='relu')
-    elif a == 'leaky':
-        layers.append(nn.LeakyReLU())
-        nn.init.kaiming_normal_(
-            layers[0].weight, nonlinearity='leaky_relu')
-    elif a == 'sigmoid':
-        layers.append(nn.Sigmoid())
-        nn.init.xavier_normal_(layers[0].weight)
-    elif a == 'tanh':
-        layers.append(nn.Tanh())
-        nn.init.xavier_normal_(layers[0].weight)
-    elif a is None:
-        nn.init.xavier_normal_(layers[0].weight)
-    return nn.Sequential(*layers)
-
-
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_c, out_c):
-        super().__init__()
-        self.conv1 = make_conv(in_c, out_c, k=3, s=1, p=1, a='leaky')
-        self.conv2 = make_conv(in_c, out_c, k=3, s=1, p=1, a=None)
-
-    def forward(self, x):
-        z = x
-        z = self.conv1(z)
-        z = self.conv2(z)
-        z = z + x
-        z = F.leaky_relu(z)
-        return z
+import util
 
 
 class PoseModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.down = nn.Sequential(
-            make_conv(3, 16, k=3, s=2, p=1, a='leaky'),
-            make_conv(16, 64, k=3, s=2, p=1, a='leaky')
+        res50 = resnet50(pretrained=True)
+
+        self.encoder = nn.Sequential(
+            res50.conv1,
+            res50.bn1,
+            res50.relu,
+            res50.maxpool,
+            res50.layer1,
+            res50.layer2,
+            res50.layer3,
+            # res50.layer4,
         )
-        self.conv = nn.Sequential(
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),
-            ResidualBlock(64, 64),
+
+        self.decoder = nn.Sequential(
+            # self._make_upsample(2048, 1024),
+            self._make_upsample(1024, 512),
+            self._make_upsample(512, 256),
+            self._make_upsample(256, 64),
+            self._make_upsample(64, 16),
+            nn.Conv2d(16, 16, (1, 1)),
+            nn.Sigmoid()
         )
-        self.up = nn.Sequential(
-            nn.Upsample(scale_factor=2),
-            make_conv(64, 32, k=3, s=1, p=1, a='leaky'),
-            make_conv(32, 32, k=3, s=1, p=1, a='leaky'),
-            nn.Upsample(scale_factor=2),
-            make_conv(32, 17, k=3, s=1, p=1, a='leaky'),
-            make_conv(17, 17, k=3, s=1, p=1, a='leaky'),
-            make_conv(17, 17, k=1, s=1, p=0, a='tanh')
-        )
+
+        del res50.avgpool
+        del res50.fc
+        del res50
+
+    def _make_upsample(self, in_c, out_c):
+        up = nn.Upsample(scale_factor=2, mode='bilinear')
+        conv = nn.Conv2d(in_c, out_c, (3, 3), padding=1)
+        bn = nn.BatchNorm2d(out_c)
+        act = nn.ReLU()
+        # nn.init.kaiming_normal_(conv.weight, nonlinearity='relu')
+        return nn.Sequential(up, conv, bn, act)
 
     def forward(self, x):
-        x = self.down(x)
-        x = self.conv(x)
-        x = self.up(x)
+        x = self.encoder(x)
+        x = self.decoder(x)
         return x
-
-
-class RunningAverage(object):
-    def __init__(self):
-        super().__init__()
-        self.iter = 0
-        self.avg = 0.0
-
-    def update(self, x):
-        self.avg = (self.avg * self.iter + x.item()) / (self.iter + 1)
-        self.iter += 1
-
-    def __str__(self):
-        if self.iter == 0:
-            return 'x'
-        return f'{self.avg:.4f}'
-
-
-class TagLoss(object):
-    def __init__(self, device):
-        super().__init__()
-        self.device = device
-
-    def __call__(self, inp_batch, tag_batch):
-        batch_size = inp_batch.size(0)
-        losses = torch.zeros(batch_size, dtype=torch.float, device=self.device)
-        for i in range(batch_size):
-            inp, tag = inp_batch[i], tag_batch[i]
-            inp, tag = inp[0], tag[0]
-            kpts = tag.nonzero()
-            K = kpts.size(0)
-            rr, cc = kpts[:, 0], kpts[:, 1]
-            inp_kpts = inp[rr, cc]
-            tag_kpts = tag[rr, cc]
-
-            A = tag_kpts.expand(K, K)
-            B = A.t()
-            tag_similarity = (A == B).float()
-
-            A = inp_kpts.unsqueeze(1)
-            A = A.expand(K, K)
-            B = inp_kpts.unsqueeze(0)
-            B = B.expand(K, K)
-            diff = ((A - B)**2)
-            inp_similarity = 2 / (1 + torch.exp(diff))
-
-            tag_similarity = tag_similarity.unsqueeze(0)
-            inp_similarity = inp_similarity.unsqueeze(0)
-
-            losses[i] = F.binary_cross_entropy(inp_similarity, tag_similarity)
-        return losses.mean()
 
 
 class PoseEstimator(object):
@@ -143,17 +72,14 @@ class PoseEstimator(object):
         self.device = device
         self.model = PoseModel().to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        self.lbl_criterion = nn.BCEWithLogitsLoss()
-        self.tag_criterion = TagLoss(self.device)
+        self.criterion = nn.BCEWithLogitsLoss()
 
         print(self.model)
         print('CKPT:', self.ckpt_dir)
 
     def _train(self):
         self.msg.update({
-            'loss': RunningAverage(),
-            'lbl_loss': RunningAverage(),
-            'tag_loss': RunningAverage(),
+            'loss': util.RunningAverage(),
         })
         self.model.train()
         for img_batch, lbl_batch, tag_batch in iter(self.train_loader):
@@ -163,23 +89,17 @@ class PoseEstimator(object):
 
             self.optimizer.zero_grad()
             out_batch = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(out_batch[:, :16, ...], lbl_batch)
-            tag_loss = self.tag_criterion(out_batch[:, 16:, ...], tag_batch)
-            loss = lbl_loss + tag_loss
+            loss = self.criterion(out_batch, lbl_batch)
             loss.backward()
             self.optimizer.step()
 
             self.msg['loss'].update(loss)
-            self.msg['lbl_loss'].update(lbl_loss)
-            self.msg['tag_loss'].update(tag_loss)
             self.pbar.update(len(img_batch))
             self.pbar.set_postfix(self.msg)
 
     def _valid(self):
         self.msg.update({
-            'vis_loss': RunningAverage(),
-            'vis_lbl_loss': RunningAverage(),
-            'vis_tag_loss': RunningAverage(),
+            'vis_loss': util.RunningAverage(),
         })
         self.model.eval()
         for img_batch, lbl_batch, tag_batch in iter(self.valid_loader):
@@ -188,13 +108,9 @@ class PoseEstimator(object):
             tag_batch = tag_batch.to(self.device)
 
             out_batch = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(out_batch[:, :16, ...], lbl_batch)
-            tag_loss = self.tag_criterion(out_batch[:, 16:, ...], tag_batch)
-            loss = lbl_loss + tag_loss
+            loss = self.criterion(out_batch, lbl_batch)
 
             self.msg['vis_loss'].update(loss)
-            self.msg['vis_lbl_loss'].update(lbl_loss)
-            self.msg['vis_tag_loss'].update(tag_loss)
         self.pbar.set_postfix(self.msg)
 
     def _vis(self):
@@ -202,34 +118,19 @@ class PoseEstimator(object):
         self.model.eval()
         for img_batch, lbl_batch, tag_batch in iter(self.vis_loader):
             img_batch = img_batch.to(self.device)
-            lbl_batch = lbl_batch.to(self.device)
-            tag_batch = tag_batch.to(self.device)
-            out_batch = self.model(img_batch)
-
-            lbl_batch = lbl_batch.cpu()
-            out_batch = torch.clamp(out_batch, 0.0, 1.0).cpu()
+            out_batch = self.model(img_batch).cpu()
 
             B = len(img_batch)
             for i in range(B):
-                vis = torch.cat([lbl_batch[i], out_batch[i][:16]])
+                vis = torch.cat([lbl_batch[i], out_batch[i]])
                 vis = vis.unsqueeze(1) # (32, 1, H, W)
                 filename = self.epoch_dir / f'{idx:05d}.jpg'
                 save_image(vis, str(filename), pad_value=1.0)
                 idx += 1
 
-    def _vis_sample(self, ax, img, lbl, tag):
-        ax.imshow(img)
-        ax.axis('off')
-        for i in range(16):
-            peaks = feature.peak_local_max(lbl[i], exclude_border=False, num_peaks=10)
-            rr, cc = peaks[:, 0], peaks[:, 1]
-            ax.scatter(cc, rr, s=15)
-            ax.scatter(cc, rr, s=15, c=tag[0][rr, cc], cmap=plt.cm.prism)
-        return ax
-
     def fit(self, train_dataset, valid_dataset, vis_dataset, epoch=200):
         self.train_loader = DataLoader(train_dataset,
-                batch_size=32, shuffle=True, num_workers=3)
+                batch_size=24, shuffle=True, num_workers=1)
         self.valid_loader = DataLoader(valid_dataset,
                 batch_size=10, shuffle=False, num_workers=1)
         self.vis_loader = DataLoader(vis_dataset,
@@ -243,7 +144,8 @@ class PoseEstimator(object):
 
             tqdm_args = {
                 'total': len(train_dataset),
-                'desc': f'Epoch {self.ep:03d}'
+                'desc': f'Epoch {self.ep:03d}',
+                'ascii': True,
             }
             with tqdm(**tqdm_args) as self.pbar:
                 self._train()

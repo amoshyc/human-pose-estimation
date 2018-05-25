@@ -1,19 +1,21 @@
 import pathlib
 from datetime import datetime
 
-import matplotlib as mpl
-mpl.use('Agg')
-
 import torch
-from torchvision.utils import save_image
-from torchvision import transforms
+from torch.utils.data.dataset import Subset, ConcatDataset
 
-from mpii import MPIItrain, MPIIvalid, MPIIvis
+from mpii import MPII
 from model import PoseEstimator
 
-import warnings
-from tqdm import TqdmSynchronisationWarning
-warnings.simplefilter("ignore", TqdmSynchronisationWarning)
+mpii_dir = pathlib.Path('./mpii')
+MPIItrain = MPII(mpii_dir, mode='train', img_size=(224, 224))
+MPIIvalid = MPII(mpii_dir, mode='valid', img_size=(224, 224))
+# MPIItrain = Subset(MPII(mpii_dir, mode='train', img_size=(224, 224)), list(range(1000)))
+# MPIIvalid = Subset(MPII(mpii_dir, mode='valid', img_size=(224, 224)), list(range(200)))
+MPIIvis = ConcatDataset([
+    Subset(MPIItrain, list(range(10))),
+    Subset(MPIIvalid, list(range(10)))
+])
 
 ckpt_dir = pathlib.Path(f'./ckpt/{datetime.now():%m-%d %H:%M:%S}/')
 ckpt_dir.mkdir(parents=True)

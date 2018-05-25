@@ -1,6 +1,22 @@
 import numpy as np
 
 
+class RunningAverage(object):
+    def __init__(self):
+        super().__init__()
+        self.iter = 0
+        self.avg = 0.0
+
+    def update(self, x):
+        self.avg = (self.avg * self.iter + x.item()) / (self.iter + 1)
+        self.iter += 1
+
+    def __str__(self):
+        if self.iter == 0:
+            return 'x'
+        return f'{self.avg:.4f}'
+
+
 def gaussian2d(mu, sigma, shape=None):
     """Generate 2d gaussian distribution coordinates and values.
     Parameters
