@@ -71,8 +71,8 @@ class PoseEstimator(object):
 
         self.device = device
         self.model = PoseModel().to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        self.criterion = nn.BCEWithLogitsLoss()
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01)
+        self.criterion = nn.BCELoss()
 
         print(self.model)
         print('CKPT:', self.ckpt_dir)
@@ -99,7 +99,7 @@ class PoseEstimator(object):
 
     def _valid(self):
         self.msg.update({
-            'vis_loss': util.RunningAverage(),
+            'val_loss': util.RunningAverage(),
         })
         self.model.eval()
         for img_batch, lbl_batch, tag_batch in iter(self.valid_loader):
@@ -110,7 +110,7 @@ class PoseEstimator(object):
             out_batch = self.model(img_batch)
             loss = self.criterion(out_batch, lbl_batch)
 
-            self.msg['vis_loss'].update(loss)
+            self.msg['val_loss'].update(loss)
         self.pbar.set_postfix(self.msg)
 
     def _vis(self):
