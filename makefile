@@ -1,6 +1,6 @@
 download-mpii:
-    mkdir mpii
-    wget 'http://datasets.d2.mpi-inf.mpg.de/andriluka14cvpr/mpii_human_pose_v1.tar.gz' -O ./mpii/mpii.tar.gz
+	mkdir mpii
+	wget 'http://datasets.d2.mpi-inf.mpg.de/andriluka14cvpr/mpii_human_pose_v1.tar.gz' -O ./mpii/mpii.tar.gz
 	wget 'http://datasets.d2.mpi-inf.mpg.de/andriluka14cvpr/mpii_human_pose_v1_u12_2.zip' -O ./mpii/anno.zip
 	python -c "from mpii import MPIIParse; MPIIParse('./mpii')"
 
