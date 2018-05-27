@@ -42,7 +42,7 @@ class PoseModel(nn.Module):
             self._make_upsample(256, 64),
             self._make_upsample(64, 16),
             nn.Conv2d(16, 16, (1, 1)),
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
 
         del res50.avgpool
@@ -50,12 +50,17 @@ class PoseModel(nn.Module):
         del res50
 
     def _make_upsample(self, in_c, out_c):
-        up = nn.Upsample(scale_factor=2, mode='bilinear')
-        conv = nn.Conv2d(in_c, out_c, (3, 3), padding=1)
+        # up = nn.Upsample(scale_factor=2, mode='bilinear')
+        # conv = nn.Conv2d(in_c, out_c, (3, 3), padding=1)
+        # nn.init.kaiming_normal_(conv.weight, nonlinearity='relu')
+        # bn = nn.BatchNorm2d(out_c)
+        # act = nn.ReLU()
+        # return nn.Sequential(up, conv, bn, act)
+
+        convT = nn.ConvTranspose2d(in_c, out_c, (2, 2), stride=2)
         bn = nn.BatchNorm2d(out_c)
         act = nn.ReLU()
-        # nn.init.kaiming_normal_(conv.weight, nonlinearity='relu')
-        return nn.Sequential(up, conv, bn, act)
+        return nn.Sequential(convT, bn, act)
 
     def forward(self, x):
         x = self.encoder(x)
@@ -74,7 +79,7 @@ class PoseEstimator(object):
         self.device = device
         self.model = PoseModel().to(self.device)
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
-        self.criterion = nn.BCELoss()
+        self.criterion = nn.BCEWithLogitsLoss()
 
         print(self.model)
         print('CKPT:', self.ckpt_dir)

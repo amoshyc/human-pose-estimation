@@ -50,7 +50,9 @@ class MPII(object):
                 lbl[jid, rr, cc] = np.maximum(lbl[jid, rr, cc], g / g.max())
 
         # Convert to tensor
+        mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
         img = transforms.ToTensor()(img)
+        img = transforms.Normalize(mean, std)(img)
         lbl = torch.tensor(lbl)
         tag = torch.tensor(tag)
         return img, lbl, tag
