@@ -32,16 +32,15 @@ class PoseModel(nn.Module):
             res50.layer1,
             res50.layer2,
             res50.layer3,
-            # res50.layer4,
+            res50.layer4,
         )
 
         self.decoder = nn.Sequential(
-            # self._make_upsample(2048, 1024),
+            self._make_upsample(2048, 1024),
             self._make_upsample(1024, 512),
             self._make_upsample(512, 256),
-            self._make_upsample(256, 64),
-            self._make_upsample(64, 16),
-            nn.Conv2d(16, 16, (1, 1)),
+            nn.Conv2d(256, 17, (1, 1)),
+            # nn.BatchNorm2d(16),
             nn.Sigmoid()
         )
 
@@ -50,22 +49,62 @@ class PoseModel(nn.Module):
         del res50
 
     def _make_upsample(self, in_c, out_c):
-        up = nn.Upsample(scale_factor=2, mode='bilinear')
-        conv = nn.Conv2d(in_c, out_c, (3, 3), padding=1)
-        nn.init.kaiming_normal_(conv.weight, nonlinearity='relu')
-        bn = nn.BatchNorm2d(out_c)
-        act = nn.ReLU()
-        return nn.Sequential(up, conv, bn, act)
-
-        # convT = nn.ConvTranspose2d(in_c, out_c, (2, 2), stride=2)
-        # bn = nn.BatchNorm2d(out_c)
-        # act = nn.ReLU()
-        # return nn.Sequential(convT, bn, act)
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_c, out_c, (2, 2), stride=2),
+            # nn.BatchNorm2d(out_c),
+            # nn.ReLU()
+        )
 
     def forward(self, x):
         x = self.encoder(x)
         x = self.decoder(x)
         return x
+
+
+class WeightedMSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, inp_batch, lbl_batch):
+        wgt_batch = torch.ones_like(lbl_batch, dtype=torch.float)
+        wgt_batch[lbl_batch > 0] = 50.0
+        dff_batch = (inp_batch - lbl_batch)**2
+        return torch.mean(wgt_batch * dff_batch)
+
+
+class TagLoss(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.device = device
+
+    def forward(self, inp_batch, tag_batch):
+        batch_size = inp_batch.size(0)
+        losses = torch.zeros(batch_size, dtype=torch.float, device=self.device)
+        for i in range(batch_size):
+            inp, tag = inp_batch[i], tag_batch[i]
+            kpts = tag.nonzero()
+            K, D = kpts.size(0), inp.size(0)
+            rr, cc = kpts[:, 0], kpts[:, 1]
+            inp_kpts = inp[:, rr, cc]                   # (D, K)
+            tag_kpts = tag[rr, cc]                      # (K)
+
+            # Ground Truth
+            A = tag_kpts.expand(K, K)                   # (K, K)
+            B = A.t()                                   # (K, K)
+            tag_similarity = (A == B).float()           # (K, K)
+
+            # Prediction
+            A = inp_kpts.unsqueeze(1)                   # (D, 1, K)
+            A = A.expand(D, K, K)                       # (D, K, K)
+            B = inp_kpts.unsqueeze(2)                   # (D, K, 1)
+            B = B.expand(D, K, K)                       # (D, K, K)
+            diff = (A - B)**2.mean(dim=0)               # (K, K)
+            inp_similarity = 2 / (1 + torch.exp(diff))  # (K, K)
+
+            # weighted MSE loss
+            losses[i] = WeightedMSELoss()(inp_similarity, tag_similarity)
+        return losses.mean() # average over batch
+
 
 
 class PoseEstimator(object):
@@ -78,8 +117,11 @@ class PoseEstimator(object):
 
         self.device = device
         self.model = PoseModel().to(self.device)
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
-        self.criterion = nn.BCELoss()
+        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+
+        self.lbl_criterion = WeightedMSELoss()
+        self.tag_criterion = TagLoss(self.device)
 
         print(self.model)
         print('CKPT:', self.ckpt_dir)
@@ -87,6 +129,8 @@ class PoseEstimator(object):
     def _train(self):
         self.msg.update({
             'loss': util.RunningAverage(),
+            'lbl_loss': util.RunningAverage(),
+            'tag_loss': util.RunningAverage(),
         })
         self.model.train()
         for img_batch, lbl_batch, tag_batch in iter(self.train_loader):
@@ -96,17 +140,23 @@ class PoseEstimator(object):
 
             self.optimizer.zero_grad()
             out_batch = self.model(img_batch)
-            loss = self.criterion(out_batch, lbl_batch)
+            lbl_loss = self.lbl_criterion(out_batch[:, :16], lbl_batch)
+            tag_loss = self.tag_criterion(out_batch[:, 16:], tag_batch)
+            loss = lbl_loss + tag_loss
             loss.backward()
             self.optimizer.step()
 
             self.msg['loss'].update(loss)
+            self.msg['lbl_loss'].update(lbl_loss)
+            self.msg['tag_loss'].update(tag_loss)
             self.pbar.update(len(img_batch))
             self.pbar.set_postfix(self.msg)
 
     def _valid(self):
         self.msg.update({
             'val_loss': util.RunningAverage(),
+            'val_lbl_loss': util.RunningAverage(),
+            'val_tag_loss': util.RunningAverage(),
         })
         self.model.eval()
         for img_batch, lbl_batch, tag_batch in iter(self.valid_loader):
@@ -115,9 +165,13 @@ class PoseEstimator(object):
             tag_batch = tag_batch.to(self.device)
 
             out_batch = self.model(img_batch)
-            loss = self.criterion(out_batch, lbl_batch)
+            lbl_loss = self.lbl_criterion(out_batch[:, :16], lbl_batch)
+            tag_loss = self.tag_criterion(out_batch[:, 16:], tag_batch)
+            loss = lbl_loss + tag_loss
 
             self.msg['val_loss'].update(loss)
+            self.msg['val_lbl_loss'].update(lbl_loss)
+            self.msg['val_tag_loss'].update(tag_loss)
         self.pbar.set_postfix(self.msg)
 
     def _vis(self):
@@ -128,12 +182,18 @@ class PoseEstimator(object):
 
             B = len(img_batch)
             for i in range(B):
-                vis = torch.cat([lbl_batch[i], out_batch[i]])
-                vis = vis.unsqueeze(1) # (32, 1, H, W)
                 img_path = self.epoch_dir / f'{idx:05d}.img.jpg'
-                vis_path = self.epoch_dir / f'{idx:05d}.vis.jpg'
                 save_image(img_batch[i], str(img_path))
-                save_image(vis, str(vis_path), pad_value=1.0)
+
+                lbl = torch.cat([lbl_batch[i, :16], out_batch[i, :16]])
+                lbl = lbl.unsqueeze(1) # (32, 1, H, W)
+                lbl_path = self.epoch_dir / f'{idx:05d}.lbl.jpg'
+                save_image(lbl, str(lbl_path), pad_value=1.0)
+
+                tag = out_batch[i, 16:]
+                tag_path = self.epoch_dir / f'{idx:05d}.tag.jpg'
+                save_image(tag, str(tag_path))
+
                 idx += 1
 
     def _log(self):
@@ -142,7 +202,7 @@ class PoseEstimator(object):
         self.log.to_csv(str(self.ckpt_dir / 'log.csv'))
         # plot loss
         fig, ax = plt.subplots(dpi=100)
-        self.log[['loss', 'val_loss']].plot(ax=ax)
+        self.log.plot(ax=ax)
         fig.tight_layout()
         fig.savefig(str(self.ckpt_dir / 'loss.jpg'))
         # Close plot to prevent RE

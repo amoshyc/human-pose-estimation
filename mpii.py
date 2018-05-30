@@ -18,10 +18,14 @@ import util
 
 
 class MPII(object):
-    def __init__(self, root_dir, mode='train', img_size=(256, 256)):
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+
+    def __init__(self, root_dir, mode='train', img_size=(256, 256), lbl_size=(64, 64)):
         super().__init__()
         self.root_dir = pathlib.Path(root_dir) / mode
         self.img_size = img_size  # H, W
+        self.lbl_size = lbl_size
         with (self.root_dir / 'anno.json').open() as f:
             self.anno = json.load(f)
 
@@ -32,27 +36,27 @@ class MPII(object):
         anno = self.anno[idx]
         img_path = self.root_dir / anno['filename']
         img = Image.open(img_path).convert('RGB')
-        W, H = img.size
+        srcW, srcH = img.size
+        imgW, imgH = self.img_size
+        lblW, lblH = self.lbl_size
 
-        img = img.resize(self.img_size[::-1])
-        lbl = np.zeros((16, *self.img_size), dtype=np.float32)
-        tag = np.zeros((1, *self.img_size), dtype=np.uint8)
+        img = img.resize((imgW, imgH))
+        lbl = np.zeros((16, lblH, lblW), dtype=np.float32)
+        tag = np.zeros((lblH, lblW), dtype=np.uint8)
 
         # Draw Gaussian & tag
         for pid, person in enumerate(anno['people']):
             for jid, (x, y) in person['joints'].items():
                 jid = int(jid)
-                r = min(round(y / H * self.img_size[0]), self.img_size[0] - 1)
-                c = min(round(x / W * self.img_size[1]), self.img_size[1] - 1)
-                tag[0, r, c] = pid + 1
-                rr, cc, g = util.gaussian2d(
-                    [r, c], [7, 7], shape=self.img_size)
+                r = min(round(y / srcH * lblH), lblH - 1)
+                c = min(round(x / srcW * lblW), lblW - 1)
+                tag[r, c] = pid + 1
+                rr, cc, g = util.gaussian2d([r, c], [3, 3], shape=self.lbl_size)
                 lbl[jid, rr, cc] = np.maximum(lbl[jid, rr, cc], g / g.max())
 
         # Convert to tensor
-        mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
         img = transforms.ToTensor()(img)
-        img = transforms.Normalize(mean, std)(img)
+        img = transforms.Normalize(MPII.mean, MPII.std)(img)
         lbl = torch.tensor(lbl)
         tag = torch.tensor(tag)
         return img, lbl, tag
