@@ -15,9 +15,10 @@ from torchvision.transforms import functional as F
 
 
 class COCOKeypoint:
-    def __init__(self, img_dir, anno_path, img_size=(256, 256)):
+    def __init__(self, img_dir, anno_path, img_size=(256, 256), lbl_size=(128, 128)):
         self.img_dir = pathlib.Path(img_dir)
         self.img_size = img_size
+        self.lbl_size = lbl_size
 
         with open(anno_path) as f:
             data = json.load(f)['annotations']
@@ -37,45 +38,46 @@ class COCOKeypoint:
     def __getitem__(self, idx):
         img_id = self.keys[idx]
         img_path = self.img_dir / f'{img_id:012d}.jpg'
-        img = Image.open(img_path)
+        img = Image.open(img_path).convert('RGB')
         srcW, srcH = img.size
-        dstH, dstW = self.img_size
-        img = img.resize((dstW, dstH))
+        img = img.resize(self.img_size[::-1])
 
         n_people = len(self.annos[img_id])
-        kpts = np.zeros((n_people * 17, 2), dtype=np.float32)
-        viss = np.zeros((n_people * 17, ), dtype=np.int32)
-        tags = np.zeros((n_people * 17, ), dtype=np.int32)
-        boxs = np.zeros((n_people, 4), dtype=np.float32)
-        lbls = np.zeros((17, dstH, dstW), dtype=np.float32)
+        kpts = np.zeros((n_people * 17, 2), dtype=np.float32)   # [0, 1]
+        viss = np.zeros((n_people * 17, ), dtype=np.int32)      # 0 or 1
+        tags = np.zeros((n_people * 17, ), dtype=np.int32)      # Z+
+        boxs = np.zeros((n_people, 4), dtype=np.float32)        # [0, 1]
         for tag, (kpt, box) in enumerate(self.annos[img_id]):
             kpt = np.float32(kpt).reshape(-1, 3)
             vis = kpt[:, 2]
-            kpt = kpt[:, [0, 1]]
+            kpt = kpt[:, [1, 0]]                                # xy -> rc
+            c, r, w, h = box
             s, t = tag * 17, (tag + 1) * 17
             kpts[s:t] = kpt
             viss[s:t] = vis
             tags[s:t] = tag
-            boxs[tag] = np.float32(box)
+            boxs[tag] = np.float32([r, c, h, w])
 
-        norm_term = np.float32([dstW / srcW, dstH / srcH])
-        kpts = np.round(kpts * norm_term).astype(np.int32)
-        norm_term = np.hstack([norm_term, norm_term])
-        boxs = np.round(boxs * norm_term).astype(np.int32)
+        kpts = kpts / np.float32([srcH, srcW])
+        boxs = boxs / np.float32([srcH, srcW, srcH, srcW])
 
+        lblH, lblW = self.lbl_size
+        lbl = np.zeros((17, lblH, lblW), dtype=np.float32)
+        lbl_kpts = kpts[viss > 0] * np.float32([lblH, lblW])
+        lbl_kpts = np.round(lbl_kpts).astype(np.int32)
         for k in range(17):
-            for pos in kpts[k::17]:
-                pos = pos[::-1].astype(np.int32)
-                rr, cc, g = self.gaussian(pos, [3, 3], shape=(dstH, dstW))
-                lbls[k, rr, cc] = np.maximum(lbls[k, rr, cc], g / g.max())
+            for (r, c) in lbl_kpts[k::17]:
+                r, c = int(r), int(c)
+                rr, cc, g = self.gaussian([r, c], [2, 2], shape=(lblH, lblW))
+                lbl[k, rr, cc] = np.maximum(lbl[k, rr, cc], g / g.max())
 
-        img = F.to_tensor(img)          # (3, dstH, dstW) float
-        kpts = torch.from_numpy(kpts)   # (n_people * 17, 2) int
-        viss = torch.from_numpy(viss)   # (n_poeple * 17,) int
-        tags = torch.from_numpy(tags)   # (n_people * 17,) int
-        boxs = torch.from_numpy(boxs)   # (n_people, 4) int
-        lbls = torch.from_numpy(lbls)   # (17, dstH, dstW) float
-        return img, kpts, viss, tags, boxs, lbls
+        img = F.to_tensor(img).float()          # (3, lblH, lblW) float
+        lbl = torch.from_numpy(lbl).float()     # (17, lblH, lblW) float
+        kpts = torch.from_numpy(kpts).float()   # (n_people * 17, 2) float
+        viss = torch.from_numpy(viss).long()    # (n_poeple * 17,) int
+        tags = torch.from_numpy(tags).long()    # (n_people * 17,) int
+        boxs = torch.from_numpy(boxs).float()   # (n_people, 4) float
+        return img, lbl, kpts, viss, tags, boxs
 
     @staticmethod
     def gaussian(mu, sigma, shape=None):
@@ -95,23 +97,29 @@ class COCOKeypoint:
     @staticmethod
     def collate_fn(batch):
         img_batch = torch.stack([datum[0] for datum in batch], dim=0)
-        kpt_batch = list([datum[1] for datum in batch])
-        vis_batch = list([datum[2] for datum in batch])
-        tag_batch = list([datum[3] for datum in batch])
-        box_batch = torch.stack([datum[4] for datum in batch], dim=0)
-        lbl_batch = torch.stack([datum[5] for datum in batch], dim=0)
-        return img_batch, kpt_batch, vis_batch, tag_batch, box_batch, lbl_batch
+        lbl_batch = torch.stack([datum[1] for datum in batch], dim=0)
+        kpt_batch = list([datum[2] for datum in batch])
+        vis_batch = list([datum[3] for datum in batch])
+        tag_batch = list([datum[4] for datum in batch])
+        box_batch = list([datum[5] for datum in batch])
+        return img_batch, lbl_batch, kpt_batch, vis_batch, tag_batch, box_batch
 
     @staticmethod
-    def plot(img, kpts, viss, tags, boxs, ax=None):
-        kpts = kpts.numpy()
-        viss = viss.numpy()
-        tags = tags.numpy()
-        boxs = boxs.numpy()
-        n_person = len(boxs)
+    def plot(tensor_img, tensor_kpts, tensor_viss, tensor_tags, tensor_boxs, ax=None):
+        img = F.to_pil_image(tensor_img)
+        kpts = tensor_kpts.numpy()
+        viss = tensor_viss.numpy()
+        tags = tensor_tags.numpy()
+        boxs = tensor_boxs.numpy()
 
-        # image
-        ax.imshow(F.to_pil_image(img))
+        imgW, imgH = img.size
+        kpts = kpts * np.float32([imgW, imgH])
+        boxs = boxs * np.float32([imgW, imgH, imgW, imgH])
+        kpts = np.round(kpts)
+        boxs = np.round(boxs)
+
+        n_people = len(boxs)
+        ax.imshow(img)
         ax.axis('off')
 
         # constants
@@ -149,7 +157,7 @@ class COCOKeypoint:
             ('right_knee', 'right_ankle')
         ]
 
-        for i in range(n_person):
+        for i in range(n_people):
             person_kpt = kpts[tags == i]
             person_vis = viss[tags == i]
             person_box = boxs[i]
@@ -165,7 +173,7 @@ class COCOKeypoint:
             person_kpt = person_kpt[person_vis]
             ax.plot(person_kpt[:, 0], person_kpt[:, 1], '.', c=c)
             # bbox
-            x, y, w, h = person_box
+            y, x, h, w = person_box
             rect = mpl.patches.Rectangle((x, y), w, h, fill=False, ec=c, lw=1)
             ax.add_patch(rect)
 
@@ -175,16 +183,19 @@ if __name__ == '__main__':
     anno_path = '/store/COCO/annotations/person_keypoints_val2017.json'
     ds = COCOKeypoint(img_dir, anno_path)
 
-    # img, kpts, viss, tags, boxs, lbls = ds[2]
-    # fig, ax = plt.subplots(dpi=100)
-    # ds.plot(img, kpts, viss, tags, boxs, ax=ax[0])
-    # plt.show()
+    img, lbl, kpts, viss, tags, boxs = ds[2]
+    fig, ax = plt.subplots(1, 2, dpi=100)
+    ds.plot(img, kpts, viss, tags, boxs, ax=ax[0])
+    ax[1].imshow(lbl.numpy().max(axis=0), cmap='gray')
+    plt.show()
 
-    loader = DataLoader(ds, batch_size=2, shuffle=False, collate_fn=COCOKeypoint.collate_fn)
-    for img_batch, kpt_batch, vis_batch, tag_batch, box_batch, lbl_batch in iter(loader):
-        print(img_batch.size())
-        print(len(kpt_batch))
-        print(len(tag_batch))
-        print(box_batch.size())
-        print(lbl_batch.size())
-        break
+    loader = DataLoader(ds, batch_size=16, shuffle=True, collate_fn=ds.collate_fn)
+    for img_batch, lbl_batch, kpt_batch, \
+        vis_batch, tag_batch, box_batch in iter(loader):
+        # print(img_batch.size())
+        # print(lbl_batch.size())
+        # print(len(kpt_batch))
+        # print(len(tag_batch))
+        # print(len(vis_batch))
+        # print(len(box_batch))
+        pass

@@ -8,15 +8,10 @@ from torchvision import transforms
 from torchvision.models import resnet50
 from torchvision.utils import save_image
 
+import numpy as np
 from tqdm import tqdm
 from skimage import feature
 import pandas as pd
-import matplotlib as mpl
-mpl.use('Agg')
-import matplotlib.pyplot as plt
-plt.style.use('seaborn')
-
-import util
 
 
 class PoseModel(nn.Module):
@@ -24,7 +19,7 @@ class PoseModel(nn.Module):
         super().__init__()
         res50 = resnet50(pretrained=True)
 
-        self.encoder = nn.Sequential(
+        self.backbone = nn.Sequential(
             res50.conv1,
             res50.bn1,
             res50.relu,
@@ -35,197 +30,126 @@ class PoseModel(nn.Module):
             res50.layer4,
         )
 
-        self.decoder = nn.Sequential(
-            self._make_upsample(2048, 1024),
-            self._make_upsample(1024, 512),
-            self._make_upsample(512, 256),
-            nn.Conv2d(256, 17, (1, 1)),
-            # nn.BatchNorm2d(16),
-            nn.Sigmoid()
+        self.decode = nn.Sequential(
+            nn.ConvTranspose2d(2048, 1024, (2, 2), stride=2),
+            nn.BatchNorm2d(1024),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(1024, 256, (2, 2), stride=2),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(256, 128, (2, 2), stride=2),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(128, 64, (2, 2), stride=2),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(),
+            nn.Conv2d(64, 20, (1, 1)),
+            nn.BatchNorm2d(20),
         )
 
         del res50.avgpool
         del res50.fc
         del res50
 
-    def _make_upsample(self, in_c, out_c):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_c, out_c, (2, 2), stride=2),
-            # nn.BatchNorm2d(out_c),
-            # nn.ReLU()
-        )
-
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        feature = self.backbone(x)
+        output = self.decode(feature)
+        lbl = F.sigmoid(output[:, :17, ...])
+        tag = output[:, 17:, ...]
+        return lbl, tag
 
 
 class WeightedMSELoss(nn.Module):
-    def __init__(self):
+    def __init__(self, w=10.0):
         super().__init__()
+        self.w = w
 
-    def forward(self, inp_batch, lbl_batch):
-        wgt_batch = torch.ones_like(lbl_batch, dtype=torch.float)
-        wgt_batch[lbl_batch > 0] = 50.0
-        dff_batch = (inp_batch - lbl_batch)**2
-        return torch.mean(wgt_batch * dff_batch)
+    def forward(self, pred_batch, true_batch):
+        wgt_batch = torch.ones_like(pred_batch, dtype=torch.float)
+        wgt_batch[true_batch > 0] = self.w
+        mse_batch = (pred_batch - true_batch)**2
+        return torch.mean(wgt_batch * mse_batch)
 
 
 class TagLoss(nn.Module):
-    def __init__(self, device):
+    def __init__(self):
         super().__init__()
-        self.device = device
 
-    def forward(self, inp_batch, tag_batch):
-        batch_size = inp_batch.size(0)
-        losses = torch.zeros(batch_size, dtype=torch.float, device=self.device)
+    def forward(self, pred_batch, kpt_batch, vis_batch, tag_batch):
+        batch_size, D, lblH, lblW = pred_batch.size()
+        device = pred_batch.device
+        losses = torch.zeros(batch_size, dtype=torch.float, device=device)
+        unnorm_term = torch.tensor([lblW, lblH], dtype=torch.float, device=device)
+
         for i in range(batch_size):
-            inp, tag = inp_batch[i], tag_batch[i]
-            kpts = tag.nonzero()
-            K, D = kpts.size(0), inp.size(0)
-            rr, cc = kpts[:, 0], kpts[:, 1]
-            inp_kpts = inp[:, rr, cc]                   # (D, K)
-            tag_kpts = tag[rr, cc]                      # (K)
+            pred = pred_batch[i]                # (D, dstH, dstW)
+            viss = vis_batch[i].to(device)      # (n_people * 17,)
+            tags = tag_batch[i].to(device)      # (n_people * 17,)
+            kpts = kpt_batch[i].to(device)      # (n_people * 17, 2)
+            kpts = kpts[viss > 0] * unnorm_term
+            kpts = torch.round(kpts).long()
+            true_ebd = tags[viss > 0]
+            pred_ebd = pred[:, kpts[:, 0], kpts[:, 1]]
+            K = true_ebd.size(0)
 
-            # Ground Truth
-            A = tag_kpts.expand(K, K)                   # (K, K)
-            B = A.t()                                   # (K, K)
-            tag_similarity = (A == B).float()           # (K, K)
+            A = true_ebd.expand(K, K)           # (K, K)
+            B = A.t()                           # (K, K)
+            true_similarity = (A == B).float()  # (K, K)
 
-            # Prediction
-            A = inp_kpts.unsqueeze(1)                   # (D, 1, K)
-            A = A.expand(D, K, K)                       # (D, K, K)
-            B = inp_kpts.unsqueeze(2)                   # (D, K, 1)
-            B = B.expand(D, K, K)                       # (D, K, K)
-            diff = (A - B)**2.mean(dim=0)               # (K, K)
-            inp_similarity = 2 / (1 + torch.exp(diff))  # (K, K)
+            A = pred_ebd.unsqueeze(1)           # (K, 1, D)
+            A = A.expand(D, K, K)
+            B = pred_ebd.unsqueeze(2)
+            B = B.expand(D, K, K)
+            mse = ((A - B)**2).mean(dim=0)
+            pred_similarity = 2 / (1 + torch.exp(mse))
 
-            # weighted MSE loss
-            losses[i] = WeightedMSELoss()(inp_similarity, tag_similarity)
-        return losses.mean() # average over batch
+            losses[i] = WeightedMSELoss(10)(pred_similarity, true_similarity)
+        return torch.mean(losses)
 
 
-
-class PoseEstimator(object):
-    def __init__(self, ckpt_dir, device):
+class RunningAverage(object):
+    def __init__(self):
         super().__init__()
-        self.ckpt_dir = pathlib.Path(ckpt_dir)
-        self.ckpt_dir.mkdir(exist_ok=True)
-        self.epoch_dir = None
-        self.ep = -1
+        self.iter = 0
+        self.avg = 0.0
 
+    def update(self, x):
+        self.avg = (self.avg * self.iter + x) / (self.iter + 1)
+        self.iter += 1
+
+    def __str__(self):
+        if self.iter == 0:
+            return '-'
+        return f'{self.avg:.4f}'
+
+
+class PoseEstimator:
+    def __init__(self, log_dir, device):
         self.device = device
-        self.model = PoseModel().to(self.device)
-        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.log_dir = pathlib.Path(log_dir)
+        self.log_dir.mkdir(exist_ok=True)
 
-        self.lbl_criterion = WeightedMSELoss()
-        self.tag_criterion = TagLoss(self.device)
+        self.model = PoseModel().to(device)
+        self.optim = torch.optim.Adam(self.model.parameters(), lr=0.01)
+        self.lbl_criterion = WeightedMSELoss(10)
+        self.tag_criterion = TagLoss()
 
-        print(self.model)
-        print('CKPT:', self.ckpt_dir)
-
-    def _train(self):
-        self.msg.update({
-            'loss': util.RunningAverage(),
-            'lbl_loss': util.RunningAverage(),
-            'tag_loss': util.RunningAverage(),
-        })
-        self.model.train()
-        for img_batch, lbl_batch, tag_batch in iter(self.train_loader):
-            img_batch = img_batch.to(self.device)
-            lbl_batch = lbl_batch.to(self.device)
-            tag_batch = tag_batch.to(self.device)
-
-            self.optimizer.zero_grad()
-            out_batch = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(out_batch[:, :16], lbl_batch)
-            tag_loss = self.tag_criterion(out_batch[:, 16:], tag_batch)
-            loss = lbl_loss + tag_loss
-            loss.backward()
-            self.optimizer.step()
-
-            self.msg['loss'].update(loss)
-            self.msg['lbl_loss'].update(lbl_loss)
-            self.msg['tag_loss'].update(tag_loss)
-            self.pbar.update(len(img_batch))
-            self.pbar.set_postfix(self.msg)
-
-    def _valid(self):
-        self.msg.update({
-            'val_loss': util.RunningAverage(),
-            'val_lbl_loss': util.RunningAverage(),
-            'val_tag_loss': util.RunningAverage(),
-        })
-        self.model.eval()
-        for img_batch, lbl_batch, tag_batch in iter(self.valid_loader):
-            img_batch = img_batch.to(self.device)
-            lbl_batch = lbl_batch.to(self.device)
-            tag_batch = tag_batch.to(self.device)
-
-            out_batch = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(out_batch[:, :16], lbl_batch)
-            tag_loss = self.tag_criterion(out_batch[:, 16:], tag_batch)
-            loss = lbl_loss + tag_loss
-
-            self.msg['val_loss'].update(loss)
-            self.msg['val_lbl_loss'].update(lbl_loss)
-            self.msg['val_tag_loss'].update(tag_loss)
-        self.pbar.set_postfix(self.msg)
-
-    def _vis(self):
-        idx = 0
-        self.model.eval()
-        for img_batch, lbl_batch, tag_batch in iter(self.vis_loader):
-            out_batch = self.model(img_batch.to(self.device)).cpu()
-
-            B = len(img_batch)
-            for i in range(B):
-                img_path = self.epoch_dir / f'{idx:05d}.img.jpg'
-                save_image(img_batch[i], str(img_path))
-
-                lbl = torch.cat([lbl_batch[i, :16], out_batch[i, :16]])
-                lbl = lbl.unsqueeze(1) # (32, 1, H, W)
-                lbl_path = self.epoch_dir / f'{idx:05d}.lbl.jpg'
-                save_image(lbl, str(lbl_path), pad_value=1.0)
-
-                tag = out_batch[i, 16:]
-                tag_path = self.epoch_dir / f'{idx:05d}.tag.jpg'
-                save_image(tag, str(tag_path))
-
-                idx += 1
-
-    def _log(self):
-        new_row = dict((k, v.avg) for k, v in self.msg.items())
-        self.log = self.log.append(new_row, ignore_index=True)
-        self.log.to_csv(str(self.ckpt_dir / 'log.csv'))
-        # plot loss
-        fig, ax = plt.subplots(dpi=100)
-        self.log.plot(ax=ax)
-        fig.tight_layout()
-        fig.savefig(str(self.ckpt_dir / 'loss.jpg'))
-        # Close plot to prevent RE
-        plt.close()
-        # model
-        torch.save(self.model, str(self.epoch_dir / 'model.pth'))
-
-    def fit(self, train_dataset, valid_dataset, vis_dataset, epoch=200):
-        self.train_loader = DataLoader(train_dataset,
-                batch_size=24, shuffle=True, num_workers=1)
-        self.valid_loader = DataLoader(valid_dataset,
-                batch_size=10, shuffle=False, num_workers=1)
-        self.vis_loader = DataLoader(vis_dataset,
-                batch_size=10, shuffle=False, num_workers=1)
+    def fit(self, train_set, valid_set, vis_set, epoch=100):
+        self.train_loader = DataLoader(train_set, batch_size=16,
+            shuffle=True, collate_fn=train_set.collate_fn, num_workers=1)
+        self.valid_loader = DataLoader(valid_set, batch_size=32,
+            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=1)
+        self.vis_loader = DataLoader(vis_set, batch_size=32,
+            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=1)
 
         self.log = pd.DataFrame()
         for self.ep in range(epoch):
-            self.epoch_dir = (self.ckpt_dir / f'{self.ep:03d}')
+            self.epoch_dir = (self.log_dir / f'{self.ep:03d}')
             self.epoch_dir.mkdir()
             self.msg = dict()
 
             tqdm_args = {
-                'total': len(train_dataset),
+                'total': len(train_set) + len(valid_set),
                 'desc': f'Epoch {self.ep:03d}',
                 'ascii': True,
             }
@@ -233,5 +157,99 @@ class PoseEstimator(object):
                 self._train()
                 with torch.no_grad():
                     self._valid()
-                    self._vis()
-                    self._log()
+                    # self._vis()
+                    # self._log()
+
+    def _train(self):
+        self.msg.update({
+            'loss': RunningAverage(),
+            'lbl_loss': RunningAverage(),
+            'tag_loss': RunningAverage()
+        })
+        self.model.train()
+        for img_batch, lbl_batch, kpt_batch, \
+            vis_batch, tag_batch, box_batch in iter(self.train_loader):
+            img_batch = img_batch.to(self.device)
+            lbl_batch = lbl_batch.to(self.device)
+
+            self.optim.zero_grad()
+            pred_lbl, pred_tag = self.model(img_batch)
+            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch)
+            tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch)
+            loss = lbl_loss + tag_loss
+            loss.backward()
+            self.optim.step()
+
+            self.msg['loss'].update(loss.item())
+            self.msg['lbl_loss'].update(lbl_loss.item())
+            self.msg['tag_loss'].update(tag_loss.item())
+            self.pbar.set_postfix(self.msg)
+            self.pbar.update(len(img_batch))
+
+    def _valid(self):
+        self.msg.update({
+            'val_loss': RunningAverage(),
+            'val_lbl_loss': RunningAverage(),
+            'val_tag_loss': RunningAverage()
+        })
+        self.model.eval()
+        for img_batch, lbl_batch, kpt_batch, \
+            vis_batch, tag_batch, box_batch in iter(self.valid_loader):
+            img_batch = img_batch.to(self.device)
+            lbl_batch = lbl_batch.to(self.device)
+
+            pred_lbl, pred_tag = self.model(img_batch)
+            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch)
+            tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch)
+            loss = lbl_loss + tag_loss
+
+            self.msg['val_loss'].update(loss.item())
+            self.msg['val_lbl_loss'].update(lbl_loss.item())
+            self.msg['val_tag_loss'].update(tag_loss.item())
+            self.pbar.update(len(img_batch))
+        self.pbar.set_postfix(self.msg)
+
+    def _vis(self):
+        self.model.eval()
+        for img_batch, lbl_batch, kpt_batch, \
+            vis_batch, tag_batch, box_batch in iter(self.valid_loader):
+            pred_lbl, pred_tag = self.model(img_batch.to(self.device))
+            pred_lbl = pred_lbl.cpu()
+            pred_tag = pred_tag.cpu()
+
+            batch_size = len(img_batch)
+            for i in range(batch_size):
+                img = img_batch[i]
+                kpts = kpt_bacth[i]
+                viss = vis_batch[i]
+                tags = tag_batch[i]
+                boxs = box_batch[i]
+                plbl = pred_lbl[i]
+                ptag = pred_tag[i]
+
+if __name__ == '__main__':
+    device = torch.device('cuda')
+    model = PoseModel().to(device)
+
+    from coco import COCOKeypoint
+    img_dir = '/store/COCO/val2017/'
+    anno_path = '/store/COCO/annotations/person_keypoints_val2017.json'
+    ds = COCOKeypoint(img_dir, anno_path)
+    dl = DataLoader(ds, batch_size=16, shuffle=True, collate_fn=ds.collate_fn, num_workers=1)
+
+    for img_batch, lbl_batch, kpt_batch, vis_batch, tag_batch, box_batch in iter(dl):
+        img_batch = img_batch.to(device)
+        lbl_batch = lbl_batch.to(device)
+        pred_lbl, pred_tag = model(img_batch)
+
+        print(img_batch.size())
+        print(lbl_batch.size())
+        print(pred_lbl.size())
+        print(pred_tag.size())
+
+        lbl_loss = WeightedMSELoss(10)(pred_lbl, lbl_batch)
+        print(lbl_loss.item())
+        tag_loss = TagLoss()(pred_tag, kpt_batch, vis_batch, tag_batch)
+        print(tag_loss.item())
+
+        break
