@@ -12,6 +12,10 @@ import numpy as np
 from tqdm import tqdm
 from skimage import feature
 import pandas as pd
+import matplotlib.pyplot as plt
+plt.style.use('seaborn')
+
+from coco import COCOKeypoint
 
 
 class PoseModel(nn.Module):
@@ -20,6 +24,7 @@ class PoseModel(nn.Module):
         res50 = resnet50(pretrained=True)
 
         self.backbone = nn.Sequential(
+            nn.BatchNorm2d(3),
             res50.conv1,
             res50.bn1,
             res50.relu,
@@ -31,10 +36,10 @@ class PoseModel(nn.Module):
         )
 
         self.decode = nn.Sequential(
-            nn.ConvTranspose2d(2048, 1024, (2, 2), stride=2),
-            nn.BatchNorm2d(1024),
+            nn.ConvTranspose2d(2048, 512, (2, 2), stride=2),
+            nn.BatchNorm2d(512),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(1024, 256, (2, 2), stride=2),
+            nn.ConvTranspose2d(512, 256, (2, 2), stride=2),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(),
             nn.ConvTranspose2d(256, 128, (2, 2), stride=2),
@@ -55,7 +60,7 @@ class PoseModel(nn.Module):
         feature = self.backbone(x)
         output = self.decode(feature)
         lbl = F.sigmoid(output[:, :17, ...])
-        tag = output[:, 17:, ...]
+        tag = F.tanh(output[:, 17:, ...])
         return lbl, tag
 
 
@@ -87,7 +92,7 @@ class TagLoss(nn.Module):
             tags = tag_batch[i].to(device)      # (n_people * 17,)
             kpts = kpt_batch[i].to(device)      # (n_people * 17, 2)
             kpts = kpts[viss > 0] * unnorm_term
-            kpts = torch.round(kpts).long()
+            kpts = torch.floor(kpts).long()     # Don't use round -> index out of range
             true_ebd = tags[viss > 0]
             pred_ebd = pred[:, kpts[:, 0], kpts[:, 1]]
             K = true_ebd.size(0)
@@ -96,14 +101,17 @@ class TagLoss(nn.Module):
             B = A.t()                           # (K, K)
             true_similarity = (A == B).float()  # (K, K)
 
-            A = pred_ebd.unsqueeze(1)           # (K, 1, D)
-            A = A.expand(D, K, K)
-            B = pred_ebd.unsqueeze(2)
-            B = B.expand(D, K, K)
-            mse = ((A - B)**2).mean(dim=0)
-            pred_similarity = 2 / (1 + torch.exp(mse))
+            A = pred_ebd.unsqueeze(1)           # (D, 1, K)
+            A = A.expand(D, K, K)               # (D, K, K)
+            B = pred_ebd.unsqueeze(2)           # (D, K, 1)
+            B = B.expand(D, K, K)               # (D, K, K)
+            exponent = ((A - B)**2).mean(dim=0) # (K, K)
+            pred_similarity = 2 / (1 + torch.exp(exponent))
 
-            losses[i] = WeightedMSELoss(10)(pred_similarity, true_similarity)
+            wgt = torch.zeros(K, K, dtype=torch.float, device=device)
+            wgt[(true_similarity > 0) | (pred_similarity > 0)] = 10.0
+            mse = ((pred_similarity - true_similarity)**2)
+            losses[i] = (mse * wgt).mean()
         return torch.mean(losses)
 
 
@@ -131,16 +139,17 @@ class PoseEstimator:
 
         self.model = PoseModel().to(device)
         self.optim = torch.optim.Adam(self.model.parameters(), lr=0.01)
-        self.lbl_criterion = WeightedMSELoss(10)
+        self.decay = torch.optim.lr_scheduler.StepLR(self.optim, step_size=8)
+        self.lbl_criterion = WeightedMSELoss(100)
         self.tag_criterion = TagLoss()
 
     def fit(self, train_set, valid_set, vis_set, epoch=100):
-        self.train_loader = DataLoader(train_set, batch_size=16,
-            shuffle=True, collate_fn=train_set.collate_fn, num_workers=1)
+        self.train_loader = DataLoader(train_set, batch_size=32,
+            shuffle=True, collate_fn=train_set.collate_fn, num_workers=4)
         self.valid_loader = DataLoader(valid_set, batch_size=32,
-            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=1)
+            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=4)
         self.vis_loader = DataLoader(vis_set, batch_size=32,
-            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=1)
+            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=4)
 
         self.log = pd.DataFrame()
         for self.ep in range(epoch):
@@ -154,11 +163,12 @@ class PoseEstimator:
                 'ascii': True,
             }
             with tqdm(**tqdm_args) as self.pbar:
+                self.decay.step()
                 self._train()
                 with torch.no_grad():
                     self._valid()
-                    # self._vis()
-                    # self._log()
+                    self._vis()
+                    self._log()
 
     def _train(self):
         self.msg.update({
@@ -211,21 +221,39 @@ class PoseEstimator:
 
     def _vis(self):
         self.model.eval()
+        idx = 0
         for img_batch, lbl_batch, kpt_batch, \
-            vis_batch, tag_batch, box_batch in iter(self.valid_loader):
+            vis_batch, tag_batch, box_batch in iter(self.vis_loader):
             pred_lbl, pred_tag = self.model(img_batch.to(self.device))
             pred_lbl = pred_lbl.cpu()
             pred_tag = pred_tag.cpu()
+            pred_tag = F.sigmoid(pred_tag)
+            pred_tag = F.upsample(pred_tag, scale_factor=2)
 
             batch_size = len(img_batch)
             for i in range(batch_size):
                 img = img_batch[i]
-                kpts = kpt_bacth[i]
-                viss = vis_batch[i]
-                tags = tag_batch[i]
-                boxs = box_batch[i]
-                plbl = pred_lbl[i]
-                ptag = pred_tag[i]
+                vis_lbl = torch.cat((lbl_batch[i], pred_lbl[i]), dim=0).unsqueeze(1)
+                vis_tag = pred_tag[i] * 0.7 + 0.3 * img
+                save_image(img, f'{self.epoch_dir}/{idx:05d}.jpg')
+                save_image(vis_lbl, f'{self.epoch_dir}/{idx:05d}_lbl.jpg', nrow=17, pad_value=1)
+                save_image(vis_tag, f'{self.epoch_dir}/{idx:05d}_tag.jpg')
+                idx += 1
+
+    def _log(self):
+        new_row = dict((k, v.avg) for k, v in self.msg.items())
+        self.log = self.log.append(new_row, ignore_index=True)
+        self.log.to_csv(str(self.log_dir / 'log.csv'))
+        # plot loss
+        fig, ax = plt.subplots(dpi=100)
+        self.log.plot(ax=ax)
+        fig.tight_layout()
+        fig.savefig(str(self.log_dir / 'loss.jpg'))
+        # Close plot to prevent RE
+        plt.close()
+        # model
+        torch.save(self.model, str(self.epoch_dir / 'model.pth'))
+
 
 if __name__ == '__main__':
     device = torch.device('cuda')
@@ -237,19 +265,11 @@ if __name__ == '__main__':
     ds = COCOKeypoint(img_dir, anno_path)
     dl = DataLoader(ds, batch_size=16, shuffle=True, collate_fn=ds.collate_fn, num_workers=1)
 
-    for img_batch, lbl_batch, kpt_batch, vis_batch, tag_batch, box_batch in iter(dl):
+    for img_batch, lbl_batch, kpt_batch, vis_batch, tag_batch, box_batch in tqdm(dl):
         img_batch = img_batch.to(device)
         lbl_batch = lbl_batch.to(device)
         pred_lbl, pred_tag = model(img_batch)
 
-        print(img_batch.size())
-        print(lbl_batch.size())
-        print(pred_lbl.size())
-        print(pred_tag.size())
-
         lbl_loss = WeightedMSELoss(10)(pred_lbl, lbl_batch)
-        print(lbl_loss.item())
         tag_loss = TagLoss()(pred_tag, kpt_batch, vis_batch, tag_batch)
-        print(tag_loss.item())
-
-        break
+        print(tag_loss)
