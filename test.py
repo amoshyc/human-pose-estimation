@@ -12,11 +12,11 @@ from model import PoseEstimator
 COCOTrain = COCOKeypoint(
     '/store/COCO/train2017/',
     '/store/COCO/annotations/person_keypoints_train2017.json',
-    img_size=(256, 256), lbl_size=(64, 64))
+    img_size=(256, 256), lbl_size=(128, 128))
 COCOValid = COCOKeypoint(
     '/store/COCO/val2017/',
     '/store/COCO/annotations/person_keypoints_val2017.json',
-    img_size=(256, 256), lbl_size=(64, 64))
+    img_size=(256, 256), lbl_size=(128, 128))
 COCOVis = ConcatDataset([
     Subset(COCOTrain, list(range(40))),
     Subset(COCOValid, list(range(40)))
@@ -27,4 +27,4 @@ log_dir.mkdir(parents=True)
 device = torch.device('cuda')
 
 est = PoseEstimator(log_dir, device)
-est.fit(COCOTrain, COCOValid, COCOVis)
+est.fit(COCOTrain, COCOValid, COCOVis, epoch=30)

@@ -71,7 +71,7 @@ class COCOKeypoint:
             vis_kpts = np.round(vis_kpts).astype(np.int32)
             for (r, c) in vis_kpts:
                 r, c = int(r), int(c)
-                rr, cc, g = self.gaussian([r, c], [2, 2], shape=(lblH, lblW))
+                rr, cc, g = self.gaussian([r, c], [3, 3], shape=(lblH, lblW))
                 lbl[k, rr, cc] = np.maximum(lbl[k, rr, cc], g / g.max())
 
         img = F.to_tensor(img).float()          # (3, lblH, lblW) float

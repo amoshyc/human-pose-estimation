@@ -36,13 +36,16 @@ class PoseModel(nn.Module):
         )
 
         self.decode = nn.Sequential(
-            nn.ConvTranspose2d(2048, 512, (2, 2), stride=2),
+            nn.ConvTranspose2d(2048, 1024, (2, 2), stride=2),
+            nn.BatchNorm2d(1024),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(1024, 512, (2, 2), stride=2),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(512, 128, (2, 2), stride=2),
-            nn.BatchNorm2d(128),
+            nn.ConvTranspose2d(512, 256, (2, 2), stride=2),
+            nn.BatchNorm2d(256),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(128, 64, (2, 2), stride=2),
+            nn.ConvTranspose2d(256, 64, (2, 2), stride=2),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(),
             nn.Conv2d(64, 20, (1, 1)),
@@ -136,7 +139,7 @@ class PoseEstimator:
 
         self.model = PoseModel().to(device)
         self.optim = torch.optim.Adam(self.model.parameters(), lr=0.01)
-        self.decay = torch.optim.lr_scheduler.StepLR(self.optim, step_size=12)
+        self.decay = torch.optim.lr_scheduler.StepLR(self.optim, step_size=10)
         self.lbl_criterion = WeightedMSELoss(100)
         self.tag_criterion = TagLoss()
 
@@ -181,7 +184,7 @@ class PoseEstimator:
 
             self.optim.zero_grad()
             pred_lbl, pred_tag = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch) * 10
+            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch) * 20
             tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch)
             loss = lbl_loss + tag_loss
             loss.backward()
@@ -206,7 +209,7 @@ class PoseEstimator:
             lbl_batch = lbl_batch.to(self.device)
 
             pred_lbl, pred_tag = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch) * 10
+            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch) * 20
             tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch)
             loss = lbl_loss + tag_loss
 
@@ -225,7 +228,7 @@ class PoseEstimator:
             pred_lbl = pred_lbl.cpu()
             pred_tag = pred_tag.cpu()
             pred_tag = F.sigmoid(pred_tag)
-            pred_tag = F.upsample(pred_tag, scale_factor=4)
+            pred_tag = F.upsample(pred_tag, scale_factor=2)
 
             batch_size = len(img_batch)
             for i in range(batch_size):
