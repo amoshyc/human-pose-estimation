@@ -63,10 +63,13 @@ class COCOKeypoint:
 
         lblH, lblW = self.lbl_size
         lbl = np.zeros((17, lblH, lblW), dtype=np.float32)
-        lbl_kpts = kpts[viss > 0] * np.float32([lblH, lblW])
-        lbl_kpts = np.round(lbl_kpts).astype(np.int32)
         for k in range(17):
-            for (r, c) in lbl_kpts[k::17]:
+            vis = viss[k::17] > 0
+            kpt = kpts[k::17]
+            vis_kpts = kpt[vis]
+            vis_kpts = vis_kpts * np.float32([lblH, lblW])
+            vis_kpts = np.round(vis_kpts).astype(np.int32)
+            for (r, c) in vis_kpts:
                 r, c = int(r), int(c)
                 rr, cc, g = self.gaussian([r, c], [2, 2], shape=(lblH, lblW))
                 lbl[k, rr, cc] = np.maximum(lbl[k, rr, cc], g / g.max())
@@ -167,11 +170,11 @@ class COCOKeypoint:
                 s, t = index[s], index[t]
                 if person_vis[s] and person_vis[t]:
                     pos = person_kpt[[s, t]]
-                    ax.plot(pos[:, 0], pos[:, 1], c=c)
+                    ax.plot(pos[:, 1], pos[:, 0], c=c)
             # keypoints, 0: invisible, 1:occulation, 2:visible
             person_vis = person_vis >= 1
             person_kpt = person_kpt[person_vis]
-            ax.plot(person_kpt[:, 0], person_kpt[:, 1], '.', c=c)
+            ax.plot(person_kpt[:, 1], person_kpt[:, 0], '.', c=c)
             # bbox
             y, x, h, w = person_box
             rect = mpl.patches.Rectangle((x, y), w, h, fill=False, ec=c, lw=1)
@@ -186,16 +189,16 @@ if __name__ == '__main__':
     img, lbl, kpts, viss, tags, boxs = ds[2]
     fig, ax = plt.subplots(1, 2, dpi=100)
     ds.plot(img, kpts, viss, tags, boxs, ax=ax[0])
-    ax[1].imshow(lbl.numpy().max(axis=0), cmap='gray')
+    ax[1].imshow(lbl[5].numpy(), cmap='gray')
     plt.show()
 
-    loader = DataLoader(ds, batch_size=16, shuffle=True, collate_fn=ds.collate_fn)
-    for img_batch, lbl_batch, kpt_batch, \
-        vis_batch, tag_batch, box_batch in iter(loader):
-        # print(img_batch.size())
-        # print(lbl_batch.size())
-        # print(len(kpt_batch))
-        # print(len(tag_batch))
-        # print(len(vis_batch))
-        # print(len(box_batch))
-        pass
+    # loader = DataLoader(ds, batch_size=16, shuffle=True, collate_fn=ds.collate_fn)
+    # for img_batch, lbl_batch, kpt_batch, \
+    #     vis_batch, tag_batch, box_batch in iter(loader):
+    #     # print(img_batch.size())
+    #     # print(lbl_batch.size())
+    #     # print(len(kpt_batch))
+    #     # print(len(tag_batch))
+    #     # print(len(vis_batch))
+    #     # print(len(box_batch))
+    #     pass

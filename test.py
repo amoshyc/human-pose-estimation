@@ -11,10 +11,12 @@ from model import PoseEstimator
 
 COCOTrain = COCOKeypoint(
     '/store/COCO/train2017/',
-    '/store/COCO/annotations/person_keypoints_train2017.json')
+    '/store/COCO/annotations/person_keypoints_train2017.json',
+    img_size=(256, 256), lbl_size=(64, 64))
 COCOValid = COCOKeypoint(
     '/store/COCO/val2017/',
-    '/store/COCO/annotations/person_keypoints_val2017.json')
+    '/store/COCO/annotations/person_keypoints_val2017.json',
+    img_size=(256, 256), lbl_size=(64, 64))
 COCOVis = ConcatDataset([
     Subset(COCOTrain, list(range(40))),
     Subset(COCOValid, list(range(40)))

@@ -101,9 +101,5 @@ ENV/
 .mypy_cache/
 
 .vscode/
-mpii/
-*.jpg
-*.png
-*.tar.gz
-nohup.out
-ckpt/
+log/
+
