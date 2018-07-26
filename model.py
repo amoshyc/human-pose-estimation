@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.models import resnet50
+from torchvision.models import *
 from torchvision.utils import save_image
 
 import numpy as np
@@ -21,24 +21,10 @@ from coco import COCOKeypoint
 class PoseModel(nn.Module):
     def __init__(self):
         super().__init__()
-        res50 = resnet50(pretrained=True)
+        densenet = densenet121(pretrained=True)
 
-        self.backbone = nn.Sequential(
-            nn.BatchNorm2d(3),
-            res50.conv1,
-            res50.bn1,
-            res50.relu,
-            res50.maxpool,
-            res50.layer1,
-            res50.layer2,
-            res50.layer3,
-            res50.layer4,
-        )
-
+        self.backbone = densenet.features
         self.decode = nn.Sequential(
-            nn.ConvTranspose2d(2048, 1024, (2, 2), stride=2),
-            nn.BatchNorm2d(1024),
-            nn.LeakyReLU(),
             nn.ConvTranspose2d(1024, 512, (2, 2), stride=2),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(),
@@ -52,28 +38,23 @@ class PoseModel(nn.Module):
             nn.BatchNorm2d(20),
         )
 
-        del res50.avgpool
-        del res50.fc
-        del res50
-
     def forward(self, x):
         feature = self.backbone(x)
         output = self.decode(feature)
-        lbl = F.sigmoid(output[:, :17, ...])
+        lbl = F.tanh(output[:, :17, ...])
         tag = F.tanh(output[:, 17:, ...])
         return lbl, tag
 
 
-class WeightedMSELoss(nn.Module):
-    def __init__(self, w=10.0):
+class LblLoss(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.w = w
 
     def forward(self, pred_batch, true_batch):
-        wgt_batch = torch.ones_like(pred_batch, dtype=torch.float)
-        wgt_batch[true_batch > 0] = self.w
-        mse_batch = (pred_batch - true_batch)**2
-        return torch.mean(wgt_batch * mse_batch)
+        wgt = torch.ones_like(pred_batch)
+        wgt[true_batch > 0] = 100
+        dis = (pred_batch - true_batch)**2
+        return (dis * wgt).mean()
 
 
 class TagLoss(nn.Module):
@@ -110,8 +91,8 @@ class TagLoss(nn.Module):
 
             wgt = torch.zeros(K, K, dtype=torch.float, device=device)
             wgt[(true_similarity > 0) | (pred_similarity > 0)] = 10.0
-            mse = ((pred_similarity - true_similarity)**2)
-            losses[i] = (mse * wgt).mean()
+            dis = (pred_similarity - true_similarity)**2
+            losses[i] = (dis * wgt).mean()
         return torch.mean(losses)
 
 
@@ -140,16 +121,16 @@ class PoseEstimator:
         self.model = PoseModel().to(device)
         self.optim = torch.optim.Adam(self.model.parameters(), lr=0.01)
         self.decay = torch.optim.lr_scheduler.StepLR(self.optim, step_size=10)
-        self.lbl_criterion = WeightedMSELoss(100)
+        self.lbl_criterion = LblLoss()
         self.tag_criterion = TagLoss()
 
     def fit(self, train_set, valid_set, vis_set, epoch=100):
-        self.train_loader = DataLoader(train_set, batch_size=32,
-            shuffle=True, collate_fn=train_set.collate_fn, num_workers=4)
-        self.valid_loader = DataLoader(valid_set, batch_size=32,
-            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=4)
-        self.vis_loader = DataLoader(vis_set, batch_size=32,
-            shuffle=False, collate_fn=valid_set.collate_fn, num_workers=4)
+        self.train_loader = DataLoader(train_set, batch_size=16,
+            shuffle=True, collate_fn=COCOKeypoint.collate_fn, num_workers=4)
+        self.valid_loader = DataLoader(valid_set, batch_size=16,
+            shuffle=False, collate_fn=COCOKeypoint.collate_fn, num_workers=4)
+        self.vis_loader = DataLoader(vis_set, batch_size=16,
+            shuffle=False, collate_fn=COCOKeypoint.collate_fn, num_workers=4)
 
         self.log = pd.DataFrame()
         for self.ep in range(epoch):
@@ -184,8 +165,8 @@ class PoseEstimator:
 
             self.optim.zero_grad()
             pred_lbl, pred_tag = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch) * 20
-            tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch)
+            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch)
+            tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch) * 0.005
             loss = lbl_loss + tag_loss
             loss.backward()
             self.optim.step()
@@ -209,8 +190,8 @@ class PoseEstimator:
             lbl_batch = lbl_batch.to(self.device)
 
             pred_lbl, pred_tag = self.model(img_batch)
-            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch) * 20
-            tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch)
+            lbl_loss = self.lbl_criterion(pred_lbl, lbl_batch)
+            tag_loss = self.tag_criterion(pred_tag, kpt_batch, vis_batch, tag_batch) * 0.005
             loss = lbl_loss + tag_loss
 
             self.msg['val_loss'].update(loss.item())
@@ -227,10 +208,11 @@ class PoseEstimator:
             pred_lbl, pred_tag = self.model(img_batch.to(self.device))
             pred_lbl = pred_lbl.cpu()
             pred_tag = pred_tag.cpu()
+            pred_lbl = F.sigmoid(pred_lbl)
             pred_tag = F.sigmoid(pred_tag)
-            pred_tag = F.upsample(pred_tag, scale_factor=2)
+            batch_size, _, H, W = img_batch.size()
+            pred_tag = F.upsample(pred_tag, (H, W))
 
-            batch_size = len(img_batch)
             for i in range(batch_size):
                 img = img_batch[i]
                 vis_lbl = torch.cat((lbl_batch[i], pred_lbl[i]), dim=0).unsqueeze(1)
@@ -245,31 +227,45 @@ class PoseEstimator:
         self.log = self.log.append(new_row, ignore_index=True)
         self.log.to_csv(str(self.log_dir / 'log.csv'))
         # plot loss
-        fig, ax = plt.subplots(dpi=100)
-        self.log.plot(ax=ax)
+        fig, ax = plt.subplots(1, 3, dpi=100)
+        self.log[['loss', 'val_loss']].plot(ax=ax[0])
+        self.log[['lbl_loss', 'val_lbl_loss']].plot(ax=ax[1])
+        self.log[['tag_loss', 'val_tag_loss']].plot(ax=ax[2])
         fig.tight_layout()
         fig.savefig(str(self.log_dir / 'loss.jpg'))
-        # Close plot to prevent RE
-        plt.close()
+        plt.close()  # Close plot to prevent RE
         # model
         torch.save(self.model, str(self.epoch_dir / 'model.pth'))
 
 
 if __name__ == '__main__':
-    device = torch.device('cuda')
-    model = PoseModel().to(device)
-
-    from coco import COCOKeypoint
     img_dir = '/store/COCO/val2017/'
     anno_path = '/store/COCO/annotations/person_keypoints_val2017.json'
-    ds = COCOKeypoint(img_dir, anno_path)
+    ds = COCOKeypoint(img_dir, anno_path, img_size=(384, 384), lbl_size=(96, 96))
     dl = DataLoader(ds, batch_size=16, shuffle=True, collate_fn=ds.collate_fn, num_workers=1)
 
-    for img_batch, lbl_batch, kpt_batch, vis_batch, tag_batch, box_batch in tqdm(dl):
+    device = torch.device('cuda')
+    model = PoseModel().to(device)
+    model = model.train()
+    optim = torch.optim.Adam(model.parameters(), lr=0.001)
+
+    pbar = tqdm(total=len(ds), ascii=True)
+    for img_batch, lbl_batch, kpt_batch, vis_batch, tag_batch, box_batch in dl:
         img_batch = img_batch.to(device)
         lbl_batch = lbl_batch.to(device)
         pred_lbl, pred_tag = model(img_batch)
 
-        lbl_loss = WeightedMSELoss(10)(pred_lbl, lbl_batch)
+        optim.zero_grad()
+        lbl_loss = LblLoss()(pred_lbl, lbl_batch)
         tag_loss = TagLoss()(pred_tag, kpt_batch, vis_batch, tag_batch)
-        print(tag_loss)
+        loss = lbl_loss + tag_loss
+        loss.backward()
+        optim.step()
+
+        pbar.update(len(img_batch))
+        pbar.set_postfix({
+            'loss': loss.item(),
+            'lbl_loss': lbl_loss.item(),
+            'tag_loss': tag_loss.item()
+        })
+    pbar.close()
